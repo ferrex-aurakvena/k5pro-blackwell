@@ -30,13 +30,13 @@ class Kandinsky5LoadTextEmbedders:
 
     DESCRIPTION = "return clip and qwen text embedders"
 
-    def load_te(self, qwen, clip, device="cuda:0"):
+    def load_te(self, qwen, clip):
         qwen_path = os.path.join(folder_paths.get_folder_paths("text_encoders")[0],qwen)
         clip_path = os.path.join(folder_paths.get_folder_paths("text_encoders")[0],clip)
         conf = {'qwen': {'checkpoint_path': qwen_path, 'max_length': 256},
             'clip': {'checkpoint_path': clip_path, 'max_length': 77}
         }
-        return (Kandinsky5TextEmbedder(DictConfig(conf), device=device),)
+        return (Kandinsky5TextEmbedder(DictConfig(conf), device='cpu'),)
 class Kandinsky5LoadDiT:
     @classmethod
     def INPUT_TYPES(s):
@@ -52,7 +52,7 @@ class Kandinsky5LoadDiT:
 
     DESCRIPTION = "return kandy dit"
 
-    def load_dit(self, dit, device="cuda:0"):
+    def load_dit(self, dit):
         
         dit_path = folder_paths.get_full_path_or_raise("diffusion_models", dit)
         current_file = Path(__file__)
@@ -60,7 +60,6 @@ class Kandinsky5LoadDiT:
         sec = dit.split("_")[-1].split(".")[0]
         conf = OmegaConf.load(os.path.join(parent_directory,f"configs/config_{sec}_sft.yaml"))
         dit = get_dit(conf.model.dit_params)
-        dit = dit.to(device=device)
         state_dict = load_file(dit_path)
         dit.load_state_dict(state_dict)
         return (dit,conf)
@@ -86,8 +85,11 @@ class Kandinsky5TextEncode(ComfyNodeABC):
 
     def encode(self, model, prompt, extended_text=None):
         text = extended_text if extended_text is not None else prompt
+        device='cuda:0'
+        model = model.to(device)
         text_embeds = model.embedder([text], type_of_content='video')
         pooled_embed = model.clip_embedder([text])
+        model = model.to('cpu')
         return (text_embeds, pooled_embed)
 
 class Kandinsky5LoadVAE:
@@ -106,10 +108,10 @@ class Kandinsky5LoadVAE:
 
     DESCRIPTION = "return vae"
 
-    def load_vae(self, vae, device="cuda:0"):
+    def load_vae(self, vae):
         vae_path = os.path.join(folder_paths.get_folder_paths("vae")[0],vae)
         vae = build_vae(DictConfig({'checkpoint_path':vae_path, 'name':'hunyuan'}))
-        vae = vae.eval().to(device=device)
+        vae = vae.eval()
 
         return (vae,)
 class expand_prompt(ComfyNodeABC):
@@ -129,7 +131,7 @@ class expand_prompt(ComfyNodeABC):
 
     CATEGORY = "conditioning"
     DESCRIPTION = "extend prompt with."
-    def expand_prompt(self, model, prompt):
+    def expand_prompt(self, model, prompt, device='cuda:0'):
         messages = [
             {
                 "role": "user",
@@ -147,6 +149,7 @@ class expand_prompt(ComfyNodeABC):
                 ],
             }
         ]
+        model = model.to(device)
         text = model.embedder.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
@@ -171,6 +174,7 @@ class expand_prompt(ComfyNodeABC):
             clean_up_tokenization_spaces=False,
         )
         print(output_text[0])
+        model = model.to('cpu')
         return (output_text[0],str(output_text[0]))
 class Kandinsky5Generate(ComfyNodeABC):
     @classmethod
@@ -201,6 +205,7 @@ class Kandinsky5Generate(ComfyNodeABC):
     def sample(self, model, config, steps, width, height, length, cfg, positive_emb, positive_clip, negative_emb, negative_clip, scheduler_scale):
         bs = 1
         device = 'cuda:0'
+        model = model.to(device)
         patch_size = (1, 2, 2)
         dim = config.model.dit_params.in_visual_dim
         length, height, width = 1 + (length - 1)//4, height // 8, width // 8
@@ -224,6 +229,7 @@ class Kandinsky5Generate(ComfyNodeABC):
                     visual_rope_pos, text_rope_pos, null_text_rope_pos,
                     cfg, scheduler_scale, config 
                 )
+        model = model.to('cpu')
         return (latent_visual,)
 
 class Kandinsky5VAEDecode(ComfyNodeABC):
@@ -241,6 +247,8 @@ class Kandinsky5VAEDecode(ComfyNodeABC):
     DESCRIPTION = "Decodes latent images back into pixel space images."
 
     def decode(self, model, latent):
+        device = 'cuda:0'
+        model = model.to(device)
         with torch.no_grad():
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 bs = 1
@@ -252,6 +260,7 @@ class Kandinsky5VAEDecode(ComfyNodeABC):
                     images = images.sample
                 images = ((images.clamp(-1., 1.) + 1.) * 0.5)#.to(torch.uint8)
         images = images[0].float().permute(1, 2, 3, 0)
+        model = model.to('cpu')
         return (images,)
 
 NODE_CLASS_MAPPINGS = {
