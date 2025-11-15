@@ -7,7 +7,7 @@
 </div>
 
 <div align="center">
-  <a href="https://habr.com/ru/companies/sberbank/articles/951800/">Habr</a> | <a href="https://ai-forever.github.io/Kandinsky-5/">Project Page</a> | Technical Report (soon) | <a href=https://huggingface.co/collections/ai-forever/kandisnky-50-t2v-lite-68d71892d2cc9b02177e5ae5> 🤗 Weights </a> | <a href="https://huggingface.co/collections/ai-forever/kandinsky-50-t2v-lite-diffusers-68dd73ebac816748ed79d6cb"> 🤗 Diffusers weights </a>  | <a href="https://github.com/ai-forever/Kandinsky-5/blob/main/comfyui/README.md">ComfyUI README</a>
+  <a href="https://habr.com/ru/companies/sberbank/articles/951800/">Habr</a> | <a href="https://kandinskylab.ai/">Project Page</a> | Technical Report (soon) | 🤗 Weights: <a href=https://huggingface.co/collections/kandinskylab/kandinsky-50-video-lite> Video Lite </a> <a href=https://huggingface.co/collections/kandinskylab/kandinsky-50-video-pro> Video Pro </a> <a href=https://huggingface.co/collections/kandinskylab/kandinsky-50-image-lite> Image Lite </a> | <a href="https://huggingface.co/docs/diffusers/main/en/api/pipelines/kandinsky5"> 🤗 Diffusers </a>  | <a href="https://github.com/kandinskylab/kandinsky-5/blob/main/comfyui/README.md">ComfyUI README</a>
 </div>
 
 <h1>Kandinsky 5.0: A family of diffusion models for Video & Image generation</h1>
@@ -18,15 +18,16 @@ https://github.com/user-attachments/assets/b9ff0417-02a4-4f6b-aacc-60c44e7fe6f1
 
 ## Project Updates
 
-- 🔥 ```2025/09/29```: We have open-sourced `Kandinsky 5.0 T2V Lite` a lite (2B parameters) version of `Kandinsky 5.0 Video` text-to-video generation model. Released checkpoints: `kandinsky5lite_t2v_pretrain_5s`, `kandinsky5lite_t2v_pretrain_10s`, `kandinsky5lite_t2v_sft_5s`, `kandinsky5lite_t2v_sft_10s`, `kandinsky5lite_t2v_nocfg_5s`, `kandinsky5lite_t2v_nocfg_10s`, `kandinsky5lite_t2v_distilled16steps_5s`, `kandinsky5lite_t2v_distilled16steps_10s` contains weight from pretrain, supervised finetuning, cfg distillation and diffusion distillation into 16 steps. 5s checkpoints are capable of generating videos up to 5 seconds long. 10s checkpoints is faster models checkpoints trained with [NABLA](https://huggingface.co/ai-forever/Wan2.1-T2V-14B-NABLA-0.7) algorithm and capable to generate videos up to 10 seconds long.
-- 🔥 ```2025/10/7```: The ComfyUI README file has been updated. SDPA support has been added, allowing you to run our code without Flash attention. Magcache support for nocfg checkpoints has been added, allowing Magcache support for sft and nocfg checkpoints. Memory consumption in the VAE has been reduced, with the entire pipeline now running at 24 GB with offloading.
+- 🔥 ```2025/11/15```: `Kandinsky 5.0 Lite I2V` & `Kandinsky 5.0 Lite T2I` models are open-sourced.
 - 🔥 ```2025/10/19```: Further VAE tiling optimization. NF4 version of Qwen2.5-VL from Bitsandbytes is supported. Flash Attention 2, Flash Attention 2, Sage Attention or SDPA can be selected for 5-seconds generation using option --attention_engine. Now generation should work on the GPUS with 12 GB of memory. Kandinsky 5 Video Lite is [accepted to diffusers](https://github.com/huggingface/diffusers/pull/12478).
+- 🔥 ```2025/10/7```: The ComfyUI README file has been updated. SDPA support has been added, allowing you to run our code without Flash attention. Magcache support for nocfg checkpoints has been added, allowing Magcache support for sft and nocfg checkpoints. Memory consumption in the VAE has been reduced, with the entire pipeline now running at 24 GB with offloading.
+- 🔥 ```2025/09/29```: We have open-sourced `Kandinsky 5.0 T2V Lite` a lite (2B parameters) version of `Kandinsky 5.0 Video` text-to-video generation model. Released checkpoints: `kandinsky5lite_t2v_pretrain_5s`, `kandinsky5lite_t2v_pretrain_10s`, `kandinsky5lite_t2v_sft_5s`, `kandinsky5lite_t2v_sft_10s`, `kandinsky5lite_t2v_nocfg_5s`, `kandinsky5lite_t2v_nocfg_10s`, `kandinsky5lite_t2v_distilled16steps_5s`, `kandinsky5lite_t2v_distilled16steps_10s` contains weight from pretrain, supervised finetuning, cfg distillation and diffusion distillation into 16 steps. 5s checkpoints are capable of generating videos up to 5 seconds long. 10s checkpoints is faster models checkpoints trained with [NABLA](https://huggingface.co/ai-forever/Wan2.1-T2V-14B-NABLA-0.7) algorithm and capable to generate videos up to 10 seconds long.
 
-## Kandinsky 5.0 T2V Lite
+## Kandinsky 5.0 Video Lite
 
-Kandinsky 5.0 T2V Lite is a lightweight video generation model (2B parameters) that ranks #1 among open-source models in its class. It outperforms larger Wan models (5B and 14B) and offers the best understanding of Russian concepts in the open-source ecosystem.
+Kandinsky 5.0 Video Lite is a lightweight video generation model (2B parameters) that ranks #1 among open-source models in its class. It outperforms larger Wan models (5B and 14B) and offers the best understanding of Russian concepts in the open-source ecosystem.
 
-We provide 8 model variants, each optimized for different use cases:
+We provide 8 Text-to-Video model variants, each optimized for different use cases:
 
 * SFT model — delivers the highest generation quality;
 
@@ -37,6 +38,20 @@ We provide 8 model variants, each optimized for different use cases:
 * Pretrain model — designed for fine-tuning by researchers and enthusiasts.
 
 All models are available in two versions: for generating 5-second and 10-second videos.
+
+Additionally, we provide Image-to-Video model capable to generate video given input image and textt prompt.
+
+## Kandinsky 5.0 Image Lite
+
+Kandinsky 5.0 Image Lite is a 6B image generation model with the following capabilities:
+
+* 1K resulution (1280x768, 1024x1024 and others).
+
+* High visual quality
+
+* Strong text-writing
+
+* Russian concepts understanding
 
 ## Pipeline
 
@@ -59,15 +74,16 @@ All models are available in two versions: for generating 5-second and 10-second 
 
 | Model                               | config | video duration | NFE | Checkpoint | Latency* |
 |-------------------------------------|--------|----------------|-----|------------|----------------|
-| Kandinsky 5.0 T2V Lite SFT 5s       |configs/config_5s_sft.yaml | 5s             | 100 |🤗 [HF](https://huggingface.co/ai-forever/Kandinsky-5.0-T2V-Lite-sft-5s) |      139 s     |
-| Kandinsky 5.0 T2V Lite SFT 10s      |configs/config_10s_sft.yaml| 10s            | 100 |🤗 [HF](https://huggingface.co/ai-forever/Kandinsky-5.0-T2V-Lite-sft-10s) |      224 s     |
-| Kandinsky 5.0 T2V Lite pretrain 5s  |configs/config_5s_pretrain.yaml | 5s             | 100 |🤗 [HF](https://huggingface.co/ai-forever/Kandinsky-5.0-T2V-Lite-pretrain-5s) |      139 s      |
-| Kandinsky 5.0 T2V Lite pretrain 10s |configs/config_10s_pretrain.yaml | 10s            | 100 |🤗 [HF](https://huggingface.co/ai-forever/Kandinsky-5.0-T2V-Lite-pretrain-10s) |     224 s      |
-| Kandinsky 5.0 T2V Lite no-CFG 5s    |configs/config_5s_nocfg.yaml| 5s             | 50  |🤗 [HF](https://huggingface.co/ai-forever/Kandinsky-5.0-T2V-Lite-nocfg-5s) |       77 s     |
-| Kandinsky 5.0 T2V Lite no-CFG 10s   |configs/config_10s_nocfg.yaml| 10s            | 50  |🤗 [HF](https://huggingface.co/ai-forever/Kandinsky-5.0-T2V-Lite-nocfg-10s) |     124 s      |
-| Kandinsky 5.0 T2V Lite distill 5s   |configs/config_5s_distil.yaml| 5s             | 16  | 🤗 [HF](https://huggingface.co/ai-forever/Kandinsky-5.0-T2V-Lite-distilled16steps-5s)|       35 s     |
-| Kandinsky 5.0 T2V Lite distill 10s  |configs/config_10s_distil.yaml| 10s            | 16  | 🤗 [HF](https://huggingface.co/ai-forever/Kandinsky-5.0-T2V-Lite-distilled16steps-10s)|      61 s      |              |
-| Kandinsky 5.0 I2V Lite 5s  |configs/config_5s_i2v.yaml| 5s            | 100  | 🤗 [HF](https://huggingface.co/ai-forever/Kandinsky-5.0-I2V-Lite-5s)|      139 s      |              |
+| Kandinsky 5.0 T2V Lite SFT 5s       |configs/config_5s_sft.yaml | 5s             | 100 |🤗 [HF](https://huggingface.co/kandinskylab/Kandinsky-5.0-T2V-Lite-sft-5s) |      139 s     |
+| Kandinsky 5.0 T2V Lite SFT 10s      |configs/config_10s_sft.yaml| 10s            | 100 |🤗 [HF](https://huggingface.co/kandinskylab/Kandinsky-5.0-T2V-Lite-sft-10s) |      224 s     |
+| Kandinsky 5.0 T2V Lite pretrain 5s  |configs/config_5s_pretrain.yaml | 5s             | 100 |🤗 [HF](https://huggingface.co/kandinskylab/Kandinsky-5.0-T2V-Lite-pretrain-5s) |      139 s      |
+| Kandinsky 5.0 T2V Lite pretrain 10s |configs/config_10s_pretrain.yaml | 10s            | 100 |🤗 [HF](https://huggingface.co/kandinskylab/Kandinsky-5.0-T2V-Lite-pretrain-10s) |     224 s      |
+| Kandinsky 5.0 T2V Lite no-CFG 5s    |configs/config_5s_nocfg.yaml| 5s             | 50  |🤗 [HF](https://huggingface.co/kandinskylab/Kandinsky-5.0-T2V-Lite-nocfg-5s) |       77 s     |
+| Kandinsky 5.0 T2V Lite no-CFG 10s   |configs/config_10s_nocfg.yaml| 10s            | 50  |🤗 [HF](https://huggingface.co/kandinskylab/Kandinsky-5.0-T2V-Lite-nocfg-10s) |     124 s      |
+| Kandinsky 5.0 T2V Lite distill 5s   |configs/config_5s_distil.yaml| 5s             | 16  | 🤗 [HF](https://huggingface.co/kandinskylab/Kandinsky-5.0-T2V-Lite-distilled16steps-5s)|       35 s     |
+| Kandinsky 5.0 T2V Lite distill 10s  |configs/config_10s_distil.yaml| 10s            | 16  | 🤗 [HF](https://huggingface.co/kandinskylab/Kandinsky-5.0-T2V-Lite-distilled16steps-10s)|      61 s      |
+| Kandinsky 5.0 I2V Lite 5s  |configs/config_5s_i2v.yaml| 5s            | 100  | 🤗 [HF](https://huggingface.co/kandinskylab/Kandinsky-5.0-I2V-Lite-5s)|      139 s      |
+| Kandinsky 5.0 T2I Lite  |configs/config_t2i.yaml| -           | 100  | 🤗 [HF](https://huggingface.co/kandinskylab/Kandinsky-5.0-T2I-Lite)|      13 s      |
 
 *Latency was measured after the second inference run. The first run of the model can be slower due to the compilation process. Inference was measured on an NVIDIA H100 GPU with 80 GB of memory, using CUDA 12.8.1 and PyTorch 2.8. For 5-second models Flash Attention 3 was used.
 
@@ -118,6 +134,44 @@ All models are available in two versions: for generating 5-second and 10-second 
       </td>
       <td>
           <video src="https://github.com/user-attachments/assets/b7da85f7-8b62-4d46-9460-7f0e505de810" width=200 controls autoplay loop></video>
+      </td>
+
+</table>
+
+
+#### Kandinsky 5.0 T2I Lite
+
+<table border="0" style="width: 200; text-align: left; margin-top: 20px;">
+  <tr>
+      <td>
+          <image src="https://github.com/user-attachments/assets/f46e6866-15ce-445d-bb81-9843a341e2a9" width=200 ></image>
+      </td>
+      <td>
+          <image src="https://github.com/user-attachments/assets/74f3af1f-b11e-4174-9f36-e956b871a6e6" width=200 ></image>
+      </td>
+  <tr>
+</table>
+<table border="0" style="width: 200; text-align: left; margin-top: 10px;">
+      <td>
+          <image src="https://github.com/user-attachments/assets/8054b25b-5d71-4547-8822-b07d71d137f4" width=200 ></image>
+      </td>
+      <td>
+          <image src="https://github.com/user-attachments/assets/f4825237-640b-4b2d-86e6-fd08fe95039f" width=200 ></image>
+      </td>
+      <td>
+          <image src="https://github.com/user-attachments/assets/73fbbc2a-3249-4b70-8931-2893ab0107a5" width=200 ></image>
+      </td>
+
+</table>
+<table border="0" style="width: 200; text-align: left; margin-top: 10px;">
+      <td>
+          <image src="https://github.com/user-attachments/assets/c309650b-8d8b-4e44-bb63-48287e22ff44" width=200 ></image>
+      </td>
+      <td>
+          <image src="https://github.com/user-attachments/assets/d5c0fcca-69b7-4d77-9c36-cd2fb87f2615" width=200 ></image>
+      </td>
+      <td>
+          <image src="https://github.com/user-attachments/assets/7895c3e8-2e72-40b8-8bf7-dcac859a6b29" width=200 ></image>
       </td>
 
 </table>
@@ -176,8 +230,8 @@ The evaluation is based on the expanded prompts from the [Movie Gen benchmark](h
 #### Installation
 Clone the repo:
 ```sh
-git clone https://github.com/ai-forever/Kandinsky-5.git
-cd Kandinsky-5
+git clone https://github.com/kandinskylab/kandinsky-5.git
+cd kandinsky-5
 ```
 
 Install dependencies:
@@ -246,6 +300,12 @@ python test.py --config ./configs/config_10s_distil.yaml --prompt "A dog in red 
 python test.py --config configs/config_5s_i2v.yaml --prompt "The Dragon breaths fire." --image "./assets/test_image.jpg" --video_duration 5
 ```
 
+#### Run Kandinsky 5.0 T2I Lite
+
+```sh
+python test.py --config ./configs/config_t2i.yaml --prompt "A dog in a red hat" --width=1280 --height=768
+```
+
 ### T2V Inference
 
 ```python
@@ -293,7 +353,28 @@ images = pipe(
 )
 ```
 
-Please, refer to [inference_example.ipynb](inference_example.ipynb)/[inference_example_i2v.ipynb](inference_example_i2v.ipynb) notebooks for more usage details.
+### T2I Inference
+
+```python
+import torch
+from kandinsky import get_T2I_pipeline
+
+device_map = {
+    "dit": torch.device('cuda:0'), 
+    "vae": torch.device('cuda:0'), 
+    "text_embedder": torch.device('cuda:0')
+}
+
+pipe = get_T2I_pipeline(device_map, conf_path="./configs/config_t2i.yaml")
+
+images = pipe(
+    seed=42,
+    save_path='./test.png',
+    text="A cat in a red hat with a label 'HELLO'"
+)
+```
+
+Please, refer to [inference_example.ipynb](inference_example.ipynb)/[inference_example_i2v.ipynb](inference_example_i2v.ipynb)/[inference_example_i2v.ipynb](inference_example_t2i.ipynb) notebooks for more usage details.
 
 ### Distributed Inference
 
@@ -380,9 +461,9 @@ You can apply to participate in the beta testing of the Kandinsky Video Lite via
     - [x] Diffusers integration
     - [x] Caching acceleration support
 - Kandinsky 5.0 Lite Image-to-Video
-    - [ ] Multi-GPU Inference code of the 2B model
+    - [x] Multi-GPU Inference code of the 2B model
     - [x] Checkpoints of the 2B model
-    - [ ] ComfyUI integration
+    - [x] ComfyUI integration
     - [ ] Diffusers integration
 - Kandinsky 5.0 Pro Text-to-Video
     - [ ] Multi-GPU Inference code of the models
@@ -394,6 +475,13 @@ You can apply to participate in the beta testing of the Kandinsky Video Lite via
     - [ ] Checkpoints of the model
     - [ ] ComfyUI integration
     - [ ] Diffusers integration
+- Kandinsky 5.0 Lite Text-to-Image
+    - [ ] Checkpoints of the model
+      - [x] Image generation
+      - [ ] Image editing
+    - [ ] ComfyUI integration
+    - [ ] Diffusers integration
+    - [ ] Caching acceleration support
 - [ ] Technical report
 
 # Authors
@@ -417,7 +505,7 @@ You can apply to participate in the beta testing of the Kandinsky Video Lite via
               Yury Kolabushin, Alexander Belykh, Mikhail Mamaev, Anastasia Aliaskina,
               Tatiana Nikulina, Polina Gavrilova, Denis Dimitrov},
     title = {Kandinsky 5.0: A family of diffusion models for Video & Image generation},
-    howpublished = {\url{https://github.com/ai-forever/Kandinsky-5}},
+    howpublished = {\url{https://github.com/kandinskylab/kandinsky-5}},
     year = 2025
 }
 
