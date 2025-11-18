@@ -484,7 +484,7 @@ You can apply to participate in the beta testing of the Kandinsky Video Lite via
       - [ ] Image editing
     - [ ] ComfyUI integration
     - [ ] Diffusers integration
-    - [ ] Caching acceleration support
+    - [x] Caching acceleration support
 - [ ] Technical report
 
 # Authors
