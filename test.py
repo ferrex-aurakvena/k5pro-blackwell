@@ -5,6 +5,7 @@ import logging
 
 import torch
 
+from kandinsky.utils import set_hf_token
 from kandinsky import get_T2V_pipeline, get_I2V_pipeline, get_T2I_pipeline
 
 
@@ -145,7 +146,17 @@ def parse_args():
         help="Name of the full attention algorithm to use for <=5 second generation",
         choices=["flash_attention_2", "flash_attention_3", "sdpa", "sage", "auto"]
     )
+    parser.add_argument(
+        "--hf_token",
+        type=str,
+        default=None,
+        help="token to download restricted models like FLUX.1-dev VAE",
+    )
     args = parser.parse_args()
+
+    if args.hf_token:
+        set_hf_token(args.hf_token)
+
     return args
 
 

@@ -9,7 +9,7 @@ from .i2i_pipeline import Kandinsky5I2IPipeline
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.verbose = True
 
-class Kandinsky5T2IPipeline:
+class Kandinsky5T2IPipeline(Kandinsky5I2IPipeline):
     def expand_prompt(self, prompt,image=None):
         messages = [
             {

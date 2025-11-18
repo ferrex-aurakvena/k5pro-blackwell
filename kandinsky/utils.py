@@ -23,6 +23,18 @@ from safetensors.torch import load_file
 torch._dynamo.config.suppress_errors = True
 
 
+HF_TOKEN = None
+
+
+def get_hf_token():
+    return HF_TOKEN
+
+
+def set_hf_token(hf_token):
+    global HF_TOKEN
+    HF_TOKEN = hf_token
+
+
 def get_T2V_pipeline(
     device_map: Union[str, torch.device, dict],
     resolution: int = 512,
@@ -67,6 +79,7 @@ def get_T2V_pipeline(
             repo_id="ai-forever/Kandinsky-5.0-T2V-Lite-sft-5s",
             allow_patterns="model/*",
             local_dir=cache_dir,
+            token=get_hf_token()
         )
         dit_path = os.path.join(cache_dir, "model/kandinsky5lite_t2v_sft_5s.safetensors")
 
@@ -75,6 +88,7 @@ def get_T2V_pipeline(
             repo_id="hunyuanvideo-community/HunyuanVideo",
             allow_patterns="vae/*",
             local_dir=cache_dir,
+            token=get_hf_token()
         )
         vae_path = os.path.join(cache_dir, "vae/")
 
@@ -82,6 +96,7 @@ def get_T2V_pipeline(
         text_encoder_path = snapshot_download(
             repo_id="Qwen/Qwen2.5-VL-7B-Instruct",
             local_dir=os.path.join(cache_dir, "text_encoder/"),
+            token=get_hf_token()
         )
         text_encoder_path = os.path.join(cache_dir, "text_encoder/")
 
@@ -89,6 +104,7 @@ def get_T2V_pipeline(
         text_encoder2_path = snapshot_download(
             repo_id="openai/clip-vit-large-patch14",
             local_dir=os.path.join(cache_dir, "text_encoder2/"),
+            token=get_hf_token()
         )
         text_encoder2_path = os.path.join(cache_dir, "text_encoder2/")
 
@@ -183,6 +199,7 @@ def get_I2V_pipeline(
             repo_id="ai-forever/Kandinsky-5.0-T2V-Lite-sft-5s",
             allow_patterns="model/*",
             local_dir=cache_dir,
+            token=get_hf_token()
         )
         dit_path = os.path.join(cache_dir, "model/kandinsky5lite_i2v_sft_5s.safetensors")
 
@@ -191,6 +208,7 @@ def get_I2V_pipeline(
             repo_id="hunyuanvideo-community/HunyuanVideo",
             allow_patterns="vae/*",
             local_dir=cache_dir,
+            token=get_hf_token()
         )
         vae_path = os.path.join(cache_dir, "vae/")
 
@@ -198,6 +216,7 @@ def get_I2V_pipeline(
         text_encoder_path = snapshot_download(
             repo_id="Qwen/Qwen2.5-VL-7B-Instruct",
             local_dir=os.path.join(cache_dir, "text_encoder/"),
+            token=get_hf_token()
         )
         text_encoder_path = os.path.join(cache_dir, "text_encoder/")
 
@@ -205,6 +224,7 @@ def get_I2V_pipeline(
         text_encoder2_path = snapshot_download(
             repo_id="openai/clip-vit-large-patch14",
             local_dir=os.path.join(cache_dir, "text_encoder2/"),
+            token=get_hf_token()
         )
         text_encoder2_path = os.path.join(cache_dir, "text_encoder2/")
 
@@ -261,7 +281,7 @@ def get_I2V_pipeline(
 def _get_TI2I_params(
     instruct_type: bool,
     model_name: str,
-    wieghts_name: str,
+    weights_name: str,
     device_map: Union[str, torch.device, dict],
     resolution: int = 1024,
     cache_dir: str = "./weights/",
@@ -305,14 +325,16 @@ def _get_TI2I_params(
             repo_id=f"kandinskylab/{model_name}",
             allow_patterns="model/*",
             local_dir=cache_dir,
+            token=get_hf_token()
         )
-        dit_path = os.path.join(cache_dir, f"model/{wieghts_name}")
+        dit_path = os.path.join(cache_dir, f"model/{weights_name}")
 
     if vae_path is None and conf_path is None:
         vae_path = snapshot_download(
             repo_id="black-forest-labs/FLUX.1-dev",
             allow_patterns="vae/*",
             local_dir=os.path.join(cache_dir, "flux"),
+            token=get_hf_token()
         )
         vae_path = os.path.join(cache_dir, "flux", "vae")
 
@@ -320,6 +342,7 @@ def _get_TI2I_params(
         text_encoder_path = snapshot_download(
             repo_id="Qwen/Qwen2.5-VL-7B-Instruct",
             local_dir=os.path.join(cache_dir, "text_encoder/"),
+            token=get_hf_token()
         )
         text_encoder_path = os.path.join(cache_dir, "text_encoder/")
 
@@ -327,6 +350,7 @@ def _get_TI2I_params(
         text_encoder2_path = snapshot_download(
             repo_id="openai/clip-vit-large-patch14",
             local_dir=os.path.join(cache_dir, "text_encoder2/"),
+            token=get_hf_token()
         )
         text_encoder2_path = os.path.join(cache_dir, "text_encoder2/")
 
@@ -381,7 +405,6 @@ def _get_TI2I_params(
     )
 
 
-
 def get_T2I_pipeline(
     device_map: Union[str, torch.device, dict],
     resolution: int = 1024,
@@ -400,7 +423,7 @@ def get_T2I_pipeline(
     kwargs = _get_TI2I_params(
         instruct_type=None,
         model_name='Kandinsky-5.0-T2I-Lite',
-        wieghts_name='kandinsky5lite_t2i.safetensors',
+        weights_name='kandinsky5lite_t2i.safetensors',
         device_map=device_map,
         resolution=resolution,
         cache_dir=cache_dir,
@@ -437,7 +460,7 @@ def get_I2I_pipeline(
     kwargs = _get_TI2I_params(
         instruct_type='channel',
         model_name='Kandinsky-5.0-I2I-Lite',
-        wieghts_name='kandinsky5lite_i2i.safetensors',
+        weights_name='kandinsky5lite_i2i.safetensors',
         device_map=device_map,
         resolution=resolution,
         cache_dir=cache_dir,
@@ -454,7 +477,6 @@ def get_I2I_pipeline(
     )
 
     return Kandinsky5I2IPipeline(**kwargs)
-
 
 
 def get_default_conf(
