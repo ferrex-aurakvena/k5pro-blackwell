@@ -15,7 +15,8 @@
 In this repository, we provide a family of diffusion models to generate a video or an image given a textual prompt and/or image.
 
 
-https://github.com/user-attachments/assets/f511c337-59ba-4f85-8fe9-cf90523ae97f
+
+https://github.com/user-attachments/assets/b06f56de-1b05-4def-a611-1a3159ed71b0
 
 
 
@@ -40,9 +41,11 @@ https://github.com/user-attachments/assets/f511c337-59ba-4f85-8fe9-cf90523ae97f
 
 Kandinsky 5.0 Video Pro is a line-up of 19B models that generates high-quality HD videos from English and Russian prompts with controllable camera motion.
 
-We provide 8 Text-to-Video model variants, each optimized for different use cases:
+We provide several Text-to-Video model variants, each optimized for different use cases:
 
 * SFT model — delivers the highest generation quality;
+
+* Pretrain model — designed for fine-tuning by researchers and enthusiasts.
 
 All models are available in two versions: for generating 5-second and 10-second videos.
 
@@ -781,5 +784,7 @@ We gratefully acknowledge the open-source projects and research that made Kandin
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI) — for integration into node-based workflows.  
 
 We deeply appreciate the contributions of these communities and researchers to the open-source ecosystem.
+
+
 
 
