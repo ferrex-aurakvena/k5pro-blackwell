@@ -19,7 +19,7 @@ from .generation_utils import generate_sample_i2v
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.verbose = True
 
-def resize_image(image, max_area, divisibility):
+def resize_image(image, max_area, divisibility=16):
     h, w = image.shape[2:]
     area = h * w
     k = sqrt(max_area / area) / divisibility
