@@ -21,6 +21,7 @@ https://github.com/user-attachments/assets/b06f56de-1b05-4def-a611-1a3159ed71b0
 
 
 ## Project Updates
+- 🔥 ```2025/11/26```:  our simplified LoRa training is available on [kandinsky-5-lora-train](https://github.com/kandinskylab/kandinsky-5-lora-train)
 - 🔥 ```2025/11/24```: LoRas for Camera control is open-sourced: [Lite LoRAs](https://huggingface.co/collections/kandinskylab/kandinsky-50-video-lite-loras) and [Pro LoRAs](https://huggingface.co/collections/kandinskylab/kandinsky-50-video-pro-loras). Inference code is avaibale in `examples/inference_examples_i2v_lora.ipynb` and `examples/inference_examples_t2v_lora.ipynb`
 - 🔥 ```2025/11/20```: `Kandinsky 5.0 Video Pro` is open-sourced. T2V & I2V models are available.
 - 🔥 ```2025/11/15```: `Kandinsky 5.0 Lite I2V` & `Kandinsky 5.0 Lite T2I` models are open-sourced.
@@ -28,6 +29,12 @@ https://github.com/user-attachments/assets/b06f56de-1b05-4def-a611-1a3159ed71b0
 - 🔥 ```2025/10/7```: The ComfyUI README file has been updated. SDPA support has been added, allowing you to run our code without Flash attention. Magcache support for nocfg checkpoints has been added, allowing Magcache support for sft and nocfg checkpoints. Memory consumption in the VAE has been reduced, with the entire pipeline now running at 24 GB with offloading.
 - 🔥 ```2025/09/29```: We have open-sourced `Kandinsky 5.0 T2V Lite` a lite (2B parameters) version of `Kandinsky 5.0 Video` text-to-video generation model. Released checkpoints: `kandinsky5lite_t2v_pretrain_5s`, `kandinsky5lite_t2v_pretrain_10s`, `kandinsky5lite_t2v_sft_5s`, `kandinsky5lite_t2v_sft_10s`, `kandinsky5lite_t2v_nocfg_5s`, `kandinsky5lite_t2v_nocfg_10s`, `kandinsky5lite_t2v_distilled16steps_5s`, `kandinsky5lite_t2v_distilled16steps_10s` contains weight from pretrain, supervised finetuning, cfg distillation and diffusion distillation into 16 steps. 5s checkpoints are capable of generating videos up to 5 seconds long. 10s checkpoints is faster models checkpoints trained with [NABLA](https://huggingface.co/ai-forever/Wan2.1-T2V-14B-NABLA-0.7) algorithm and capable to generate videos up to 10 seconds long.
 
+## Community Works
+
+If your research or project builds upon Kandinsky 5, and you would like more people to see it, please inform us.
+
+- [bghira/SimpleTuner](https://github.com/bghira/SimpleTuner) now supports Kandinsky 5.0 LoRA and even full-rank training.
+- [CacheDiT](https://github.com/vipshop/cache-dit/tree/main) offers Fully Cache Acceleration support for Kandinsky-5 with DBCache, TaylorSeer and Cache CFG. Visit their [example](https://github.com/vipshop/cache-dit/blob/main/examples/pipeline/run_kandinsky5_t2v.py) for more details.
 
 ## Table of Contents
 1. [Kandinsky 5.0 Video Pro](#kandinsky-50-video-pro)
@@ -674,9 +681,6 @@ By default we use option --attention_engine=auto which enables automatic selecti
 
 See the instruction [here](comfyui)
 
-### CacheDiT
-
-cache-dit offers Fully Cache Acceleration support for Kandinsky-5 with DBCache, TaylorSeer and Cache CFG. Visit their [example](https://github.com/vipshop/cache-dit/blob/main/examples/pipeline/run_kandinsky5_t2v.py) for more details.
 
 ### Beta testing
 You can apply to participate in the beta testing of the Kandinsky Video Lite via the [telegram bot](https://t.me/kandinsky_access_bot).
