@@ -30,7 +30,6 @@ av
 pytest
 tqdm
 omegaconf
-numpy
 
 ninja
 bitsandbytes
