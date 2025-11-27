@@ -139,6 +139,7 @@ class TEMultiheadSelfAttentionDec(nn.Module):
 
         # Preserve whatever backend was configured on the original module (auto/sdpa/flash/sage).
         self.attn_engine = attn_engine or SelfAttentionEngine("auto")
+        self._nabla_logged = False
 
     def get_qkv(self, x):
         query = self.to_query(x)
@@ -200,6 +201,9 @@ class TEMultiheadSelfAttentionDec(nn.Module):
         key = apply_rotary(key, rope).type_as(key)
 
         if sparse_params is not None:
+            if not self._nabla_logged:
+                print("[TE-DiT] Using NABLA sparse attention in visual self-attention.")
+                self._nabla_logged = True
             out = self.nabla(query, key, value, sparse_params=sparse_params)
         else:
             out = self.attention(query, key, value)
@@ -281,7 +285,14 @@ class DiffusionTransformer3DTEFP8(DiffusionTransformer3D):
     - Final OutLayer remains plain bf16 PyTorch (not TE), as requested.
     """
 
-    def __init__(self, *args, enable_fp8: bool = True, fp8_recipe=None, params_dtype=torch.bfloat16, **kwargs):
+    def __init__(
+        self,
+        *args,
+        enable_fp8: bool = True,
+        fp8_recipe=None,
+        params_dtype=torch.bfloat16,
+        **kwargs,
+    ):
         if te is None:
             raise ImportError(
                 "transformer_engine is not available. "
@@ -304,8 +315,13 @@ class DiffusionTransformer3DTEFP8(DiffusionTransformer3D):
         # Derive head_dim from RoPE3D axes config (matches original constructor).
         head_dim = sum(self.visual_rope_embeddings.axes_dims)
 
+        print(
+            f"[TE-DiT] Initializing DiffusionTransformer3DTEFP8 "
+            f"(enable_fp8={self.fp8_enabled}, head_dim={head_dim}, params_dtype={self.params_dtype})"
+        )
+
         # --- Text encoder blocks -> TE variants ---
-        for block in self.text_transformer_blocks:
+        for block_idx, block in enumerate(self.text_transformer_blocks):
             old_attn = block.self_attention
             old_ff = block.feed_forward
             ff_dim = old_ff.out_layer.in_features
@@ -323,7 +339,7 @@ class DiffusionTransformer3DTEFP8(DiffusionTransformer3D):
             )
 
         # --- Visual decoder blocks -> TE variants ---
-        for block in self.visual_transformer_blocks:
+        for block_idx, block in enumerate(self.visual_transformer_blocks):
             old_self = block.self_attention
             old_cross = block.cross_attention
             old_ff = block.feed_forward
@@ -347,8 +363,47 @@ class DiffusionTransformer3DTEFP8(DiffusionTransformer3D):
                 params_dtype=self.params_dtype,
             )
 
+    # ---- Override compiled helpers with eager versions (less overhead with TE) ----
+
+    def before_text_transformer_blocks(
+        self,
+        text_embed,
+        time,
+        pooled_text_embed,
+        x,
+        text_rope_pos,
+    ):
+        text_embed = self.text_embeddings(text_embed)
+        time_embed = self.time_embeddings(time)
+        time_embed = time_embed + self.pooled_text_embeddings(pooled_text_embed)
+        visual_embed = self.visual_embeddings(x)
+        text_rope = self.text_rope_embeddings(text_rope_pos)
+        return text_embed, time_embed, text_rope, visual_embed
+
+    def before_visual_transformer_blocks(
+        self,
+        visual_embed,
+        visual_rope_pos,
+        scale_factor,
+        sparse_params,
+    ):
+        visual_shape = visual_embed.shape[:-1]
+        visual_rope = self.visual_rope_embeddings(
+            visual_shape,
+            visual_rope_pos,
+            scale_factor,
+        )
+        to_fractal = sparse_params["to_fractal"] if sparse_params is not None else False
+        visual_embed, visual_rope = fractal_flatten(
+            visual_embed,
+            visual_rope,
+            visual_shape,
+            block_mask=to_fractal,
+        )
+        return visual_embed, visual_shape, to_fractal, visual_rope
+
     def forward(self, *args, **kwargs):
-        if not self.fp8_enabled:
+        if not self.fp8_enabled or te is None:
             return super().forward(*args, **kwargs)
 
         # FP8 autocast only affects TE modules; OutLayer (final layer) stays in bf16.
@@ -356,7 +411,13 @@ class DiffusionTransformer3DTEFP8(DiffusionTransformer3D):
             return super().forward(*args, **kwargs)
 
 
-def get_dit(conf, backend: str = "te-fp8", enable_fp8: bool = True, params_dtype=torch.bfloat16, **kwargs):
+def get_dit(
+    conf,
+    backend: str = "te-fp8",
+    enable_fp8: bool = True,
+    params_dtype=torch.bfloat16,
+    **kwargs,
+):
     """
     Factory for a TE-enhanced DiT.
 
@@ -375,10 +436,10 @@ def get_dit(conf, backend: str = "te-fp8", enable_fp8: bool = True, params_dtype
     if backend not in {"te-fp8", "te_fp8"}:
         raise ValueError(f"Unsupported TE backend '{backend}'. Only 'te-fp8' is implemented for now.")
 
-    # `conf` is an OmegaConf DictConfig in the original repo; it behaves like a mapping.
     return DiffusionTransformer3DTEFP8(
         **conf,
         enable_fp8=enable_fp8,
         params_dtype=params_dtype,
         **kwargs,
     )
+

@@ -1,7 +1,6 @@
 import argparse
 import logging
 import os
-import random
 import time
 import warnings
 from datetime import datetime
@@ -136,6 +135,18 @@ def parse_args():
         help="TE backend to use (currently only te-fp8 is implemented)",
     )
     parser.add_argument(
+        "--disable_fp8",
+        action="store_true",
+        default=False,
+        help="Run TE DiT without FP8 autocast (TE-BF16), useful for debugging/speed comparison.",
+    )
+    parser.add_argument(
+        "--no_te",
+        action="store_true",
+        default=False,
+        help="Use the baseline bf16 DiT (no TE swap).",
+    )
+    parser.add_argument(
         "--hf_token",
         type=str,
         default=None,
@@ -167,6 +178,7 @@ def make_default_output_path(prompt: str, time_length: int) -> str:
     if not base:
         base = "sample"
 
+    # Use te_fp8_ prefix for TE runs; baseline will still get a similar name.
     prefix = "te_fp8"
     ext = ".png" if time_length == 0 else ".mp4"
     filename = f"{prefix}_{ts}_{base}{ext}"
@@ -186,6 +198,15 @@ def main():
     # Device map – simple single-GPU default
     device_map = {"dit": "cuda:0", "vae": "cuda:0", "text_embedder": "cuda:0"}
 
+    print("=== TE T2V Test ===")
+    print(f"Config:         {args.config}")
+    print(f"Resolution:     {args.height}x{args.width}")
+    print(f"Duration:       {args.video_duration}s")
+    print(f"Sample steps:   {args.sample_steps if args.sample_steps is not None else 'config default'}")
+    print(f"TE backend:     {args.te_backend if not args.no_te else 'baseline (no TE)'}")
+    print(f"FP8 enabled:    {not args.disable_fp8 and not args.no_te}")
+    print()
+
     # Build the standard T2V pipeline first to reuse all loading logic (config, text embedder, VAE, etc.)
     base_pipe = get_T2V_pipeline(
         device_map=device_map,
@@ -196,28 +217,41 @@ def main():
         attention_engine=args.attention_engine,
     )
 
-    # Build a TE-FP8 DiT from the same config and copy weights from the original DiT
-    te_dit = get_te_dit(base_pipe.conf.model.dit_params, backend=args.te_backend)
-    te_dit = te_dit.to(device_map["dit"])
-    te_dit.load_state_dict(base_pipe.dit.state_dict(), strict=False)
+    if args.no_te:
+        # Baseline bf16 path, no TE swap
+        pipe = base_pipe
+        print("[te_test] Using baseline bf16 DiT (no TE).")
+    else:
+        # Build a TE DiT from the same config and copy weights from the original DiT
+        print(
+            f"[te_test] Swapping baseline DiT -> TE DiT (backend={args.te_backend}, "
+            f"enable_fp8={not args.disable_fp8})..."
+        )
+        te_dit = get_te_dit(
+            base_pipe.conf.model.dit_params,
+            backend=args.te_backend,
+            enable_fp8=not args.disable_fp8,
+        )
+        te_dit = te_dit.to(device_map["dit"])
+        te_dit.load_state_dict(base_pipe.dit.state_dict(), strict=False)
 
-    # Construct the TE pipeline shell around the TE DiT
-    pipe = Kandinsky5T2VTEPipeline(
-        device_map=device_map,
-        dit=te_dit,
-        text_embedder=base_pipe.text_embedder,
-        vae=base_pipe.vae,
-        local_dit_rank=base_pipe.local_dit_rank,
-        world_size=base_pipe.world_size,
-        conf=base_pipe.conf,
-        offload=args.offload,
-        device_mesh=getattr(base_pipe, "device_mesh", None),
-    )
+        # Construct the TE pipeline shell around the TE DiT
+        pipe = Kandinsky5T2VTEPipeline(
+            device_map=device_map,
+            dit=te_dit,
+            text_embedder=base_pipe.text_embedder,
+            vae=base_pipe.vae,
+            local_dit_rank=base_pipe.local_dit_rank,
+            world_size=base_pipe.world_size,
+            conf=base_pipe.conf,
+            offload=args.offload,
+            device_mesh=getattr(base_pipe, "device_mesh", None),
+        )
 
-    # Free the original BF16 DiT + base pipeline object to reclaim memory
-    del base_pipe.dit
-    del base_pipe
-    torch.cuda.empty_cache()
+        # Free the original BF16 DiT to reclaim memory
+        del base_pipe.dit
+        del base_pipe
+        torch.cuda.empty_cache()
 
     # Output path
     time_length = int(args.video_duration)
@@ -229,7 +263,10 @@ def main():
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
-    # Call TE pipeline
+    print(f"[te_test] Output will be saved to: {output_filename}")
+    print()
+
+    # Call pipeline
     start_time = time.perf_counter()
     result = pipe(
         args.prompt,
@@ -249,10 +286,9 @@ def main():
     print(f"TIME ELAPSED: {elapsed:.2f} seconds")
     print(f"Generated file is saved to {output_filename}")
 
-    # `result` is the tensor of decoded frames; we don't need it here, but
-    # returning it makes this script usable as an importable module too.
     return result
 
 
 if __name__ == "__main__":
     main()
+
