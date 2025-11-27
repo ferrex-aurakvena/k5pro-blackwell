@@ -13,6 +13,7 @@ import torch
 from kandinsky.utils import set_hf_token
 from kandinsky import get_T2V_pipeline
 from kandinsky.models.te_dit import get_dit as get_te_dit
+from kandinsky.te_t2v_pipeline import Kandinsky5T2VPipeline as TET2VPipeline
 
 
 # -------------------------------
@@ -211,8 +212,14 @@ def parse_args():
 # -------------------------------
 
 def build_pipeline(args, device_map):
-    # Base T2V pipeline
-    pipe = get_T2V_pipeline(
+    """
+    Build a pipeline that:
+      - Reuses get_T2V_pipeline to load weights / text encoder / VAE.
+      - Wraps those components in our flexible TE T2V pipeline (no resolution whitelist).
+      - Optionally swaps DiT for TE-backed DiT.
+    """
+    # First, use upstream helper to load everything
+    base_pipe = get_T2V_pipeline(
         device_map=device_map,
         conf_path=args.config,
         offload=args.offload,
@@ -221,8 +228,21 @@ def build_pipeline(args, device_map):
         attention_engine=args.attention_engine,
     )
 
+    # Wrap in TE T2V pipeline which has relaxed resolution constraints
+    pipe = TET2VPipeline(
+        device_map=device_map,
+        dit=base_pipe.dit,
+        text_embedder=base_pipe.text_embedder,
+        vae=base_pipe.vae,
+        local_dit_rank=getattr(base_pipe, "local_dit_rank", 0),
+        world_size=getattr(base_pipe, "world_size", 1),
+        conf=base_pipe.conf,
+        offload=base_pipe.offload,
+        device_mesh=getattr(base_pipe, "device_mesh", None),
+    )
+
     if args.no_te:
-        print("[te_test] Using baseline bf16 DiT (no TE).")
+        print("[te_test] Using baseline bf16 DiT (no TE) with flexible resolution pipeline.")
         return pipe
 
     # TE path: swap in TE-backed DiT

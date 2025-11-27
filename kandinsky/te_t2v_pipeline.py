@@ -7,12 +7,7 @@ import transformers
 import torch
 from torch.distributed.device_mesh import DeviceMesh
 import torchvision
-from peft import (
-    PeftConfig,
-    LoraConfig,
-    inject_adapter_in_model,
-    set_peft_model_state_dict,
-)
+from peft import PeftConfig, LoraConfig, inject_adapter_in_model, set_peft_model_state_dict
 from safetensors.torch import load_file
 from torchvision.transforms import ToPILImage
 
@@ -25,32 +20,34 @@ torch._dynamo.config.verbose = True
 def read_safetensors_json(file_path):
     """Reads the metadata (JSON header) from a safetensors file."""
     with open(file_path, "rb") as f:
+        # Step 1: Read the first 8 bytes to get the size of the header (N)
         header_size_bytes = f.read(8)
-        header_size = struct.unpack("Q", header_size_bytes)[0]
+        header_size = struct.unpack("Q", header_size_bytes)[0]  # unsigned 64‑bit int
+
+        # Step 2: Read the next N bytes which contain the JSON header
         header_bytes = f.read(header_size)
         header_str = header_bytes.decode("utf-8")
+
+        # Step 3: Parse the JSON header
         header = json.loads(header_str)
         return header
 
 
-class Kandinsky5T2VTEPipeline:
+class Kandinsky5T2VPipeline:
     """
-    TE-enhanced T2V pipeline.
+    TE-friendly T2V pipeline with relaxed resolution rules.
 
-    This is a near-copy of the upstream Kandinsky5T2VPipeline, but:
-
-      - It does NOT enforce the original hard-coded resolution table.
-      - Instead, it allows arbitrary resolutions that are multiples of 128,
-        which are compatible with the VAE + patching + fractal NABLA.
-      - It’s intended to be used with a TE-FP8 DiT (DiffusionTransformer3DTEFP8),
-        but is otherwise agnostic: it just calls `self.dit`.
-
-    We keep the LoRA / PEFT hooks and prompt expansion behavior unchanged.
+    Differences from upstream `t2v_pipeline.Kandinsky5T2VPipeline`:
+      - No RESOLUTIONS whitelist.
+      - We only require height/width > 0 and multiples of 64.
+      - Everything else (prompt expansion, PEFT, MagCache, etc.) is preserved.
     """
 
     def __init__(
         self,
-        device_map: Union[str, torch.device, dict],
+        device_map: Union[
+            str, torch.device, dict
+        ],  # {"dit": cuda:0, "vae": cuda:1, "text_embedder": cuda:1 }
         dit,
         text_embedder,
         vae,
@@ -63,6 +60,10 @@ class Kandinsky5T2VTEPipeline:
         self.dit = dit
         self.text_embedder = text_embedder
         self.vae = vae
+
+        # We keep resolution in case other code wants it, but we do NOT use it
+        # to restrict height/width pairs anymore.
+        self.resolution = conf.metrics.resolution
 
         self.device_map = device_map
         self.local_dit_rank = local_dit_rank
@@ -91,7 +92,7 @@ class Kandinsky5T2VTEPipeline:
         1. "In a dimly lit room with a cluttered background, papers are pinned to the wall and various objects rest on a desk. Three men stand present: one wearing a red sweater, another in a black sweater, and the third in a gray shirt. The man in the gray shirt speaks and makes hand gestures, while the other two men look forward. The camera remains stationary, focusing on the three men throughout the sequence. A gritty and realistic visual style prevails, marked by a greenish tint that contributes to a moody atmosphere. Low lighting casts shadows, enhancing the tense mood of the scene."
         2. "In an office setting, a man sits at a desk wearing a gray sweater and seated in a black office chair. A wooden cabinet with framed pictures stands beside him, alongside a small plant and a lit desk lamp. Engaged in a conversation, he makes various hand gestures to emphasize his points. His hands move in different positions, indicating different ideas or points. The camera remains stationary, focusing on the man throughout. Warm lighting creates a cozy atmosphere. The man appears to be explaining something. The overall visual style is professional and polished, suitable for a business or educational context."
         3. "A person works on a wooden object resembling a sunburst pattern, holding it in their left hand while using their right hand to insert a thin wire into the gaps between the wooden pieces. The background features a natural outdoor setting with greenery and a tree trunk visible. The camera stays focused on the hands and the wooden object throughout, capturing the detailed process of assembling the wooden structure. The person carefully threads the wire through the gaps, ensuring the wooden pieces are securely fastened together. The scene unfolds with a naturalistic and instructional style, emphasizing the craftsmanship and the methodical steps taken to complete the task."
-        IImportantly! These are just examples from a large training dataset of 200 million videos.
+        Importantly! These are just examples from a large training dataset of 200 million videos.
         Rewrite Prompt: "{prompt}" to get high-quality video generation. Answer only with expanded prompt.""",
                     },
                 ],
@@ -140,8 +141,17 @@ class Kandinsky5T2VTEPipeline:
         num_steps = self.num_steps if num_steps is None else num_steps
         guidance_weight = self.guidance_weight if guidance_weight is None else guidance_weight
 
-        # make sure we don't end up with float num_frames
+        # Make sure we don't end up with float num_frames
         time_length = int(time_length)
+
+        # --- Resolution sanity (relaxed vs upstream) ---
+        if height <= 0 or width <= 0:
+            raise ValueError(f"Height and width must be positive. Got ({height}, {width}).")
+        if (height % 64) != 0 or (width % 64) != 0:
+            raise ValueError(
+                f"Height and width must be multiples of 64 for this model. "
+                f"Got ({height}, {width})."
+            )
 
         # SEED
         if seed is None:
@@ -154,22 +164,6 @@ class Kandinsky5T2VTEPipeline:
                 torch.distributed.broadcast(seed, 0)
 
             seed = seed.item()
-
-        # --- Flexible resolution check for TE/NABLA path ---
-        # We allow arbitrary resolutions (for quick tests like 128x128),
-        # as long as they are compatible with the current VAE + patching +
-        # fractal NABLA setup. With patch_size=(1,2,2), that effectively
-        # means multiples of 128 in both dimensions.
-        if height <= 0 or width <= 0:
-            raise ValueError(
-                f"Height and width must be positive integers. Got ({height}, {width})."
-            )
-
-        if (height % 128) != 0 or (width % 128) != 0:
-            raise ValueError(
-                "Height and width must be multiples of 128 for this model "
-                f"(got {height}x{width})."
-            )
 
         # PREPARATION
         num_frames = 1 if time_length == 0 else time_length * 24 // 4 + 1
@@ -244,7 +238,7 @@ class Kandinsky5T2VTEPipeline:
                             )
                 return images
 
-    # ---- LoRA / PEFT helpers (unchanged from upstream t2v_pipeline) ----
+    # --- PEFT / adapters (unchanged from upstream) ---
 
     def load_adapter(
         self,
@@ -280,10 +274,7 @@ class Kandinsky5T2VTEPipeline:
         if trigger is not None:
             self.peft_trigger = trigger
         else:
-            if (
-                "__metadata__" in adapter_metadata
-                and "trigger" in adapter_metadata["__metadata__"]
-            ):
+            if "__metadata__" in adapter_metadata and "trigger" in adapter_metadata["__metadata__"]:
                 self.peft_trigger = adapter_metadata["__metadata__"]["trigger"]
             else:
                 self.peft_trigger = ""
@@ -307,14 +298,17 @@ class Kandinsky5T2VTEPipeline:
         if incompatible_keys is not None:
             err_msg = ""
             origin_name = "state_dict"
-            if hasattr(incompatible_keys, "unexpected_keys") and len(
-                incompatible_keys.unexpected_keys
-            ) > 0:
+            # Check for unexpected keys.
+            if (
+                hasattr(incompatible_keys, "unexpected_keys")
+                and len(incompatible_keys.unexpected_keys) > 0
+            ):
                 err_msg = (
                     f"Loading adapter weights from {origin_name} led to unexpected keys "
                     f"not found in the model: {', '.join(incompatible_keys.unexpected_keys)}. "
                 )
 
+            # Check for missing keys.
             missing_keys = getattr(incompatible_keys, "missing_keys", None)
             if missing_keys:
                 lora_missing_keys = [
@@ -322,8 +316,8 @@ class Kandinsky5T2VTEPipeline:
                 ]
                 if lora_missing_keys:
                     err_msg += (
-                        f"Loading adapter weights from {origin_name} led to missing keys "
-                        f"in the model: {', '.join(lora_missing_keys)}"
+                        f"Loading adapter weights from {origin_name} led to missing keys in the model: "
+                        f"{', '.join(lora_missing_keys)}"
                     )
 
             if err_msg:
@@ -338,14 +332,14 @@ class Kandinsky5T2VTEPipeline:
             missing = set(adapter_name) - set(self.peft_config)
             if len(missing) > 0:
                 raise ValueError(
-                    "Following adapter(s) could not be found: "
-                    f"{', '.join(missing)}. Make sure you are passing the correct adapter name(s). "
+                    f"Following adapter(s) could not be found: {', '.join(missing)}. "
+                    f"Make sure you are passing the correct adapter name(s). "
                     f"Current loaded adapters are: {list(self.peft_config.keys())}"
                 )
         elif adapter_name not in self.peft_config:
             raise ValueError(
-                "Adapter with name {adapter_name} not found. Please pass the correct adapter "
-                f"name among {list(self.peft_config.keys())}"
+                f"Adapter with name {adapter_name} not found. Please pass the correct adapter name among "
+                f"{list(self.peft_config.keys())}"
             )
 
         from peft.tuners.tuners_utils import BaseTunerLayer
@@ -368,8 +362,7 @@ class Kandinsky5T2VTEPipeline:
 
         if not _adapters_has_been_set:
             raise ValueError(
-                "Did not succeed in setting the adapter. Please make sure you are using a model "
-                "that supports adapters."
+                "Did not succeed in setting the adapter. Please make sure you are using a model that supports adapters."
             )
         self.peft_trigger = self.peft_triggers[adapter_name]
 
