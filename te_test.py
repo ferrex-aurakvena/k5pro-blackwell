@@ -1,17 +1,23 @@
+#!/usr/bin/env python
 import argparse
-import logging
-import os
 import time
 import warnings
-from datetime import datetime
+import logging
+import os
+import json
+import random
+import datetime
 
 import torch
 
 from kandinsky.utils import set_hf_token
 from kandinsky import get_T2V_pipeline
-from kandinsky.te_t2v_pipeline import Kandinsky5T2VTEPipeline
 from kandinsky.models.te_dit import get_dit as get_te_dit
 
+
+# -------------------------------
+# Utility helpers
+# -------------------------------
 
 def disable_warnings():
     warnings.filterwarnings("ignore")
@@ -26,21 +32,67 @@ def disable_warnings():
     )
 
 
+def set_seed_all(seed: int):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+
+
+def validate_args(args):
+    # Minimal sanity + keep things compatible with the VAE/patching
+    if args.width <= 0 or args.height <= 0:
+        raise ValueError(f"Width/height must be positive. Got ({args.width}, {args.height}).")
+    if args.width % 64 != 0 or args.height % 64 != 0:
+        raise ValueError(
+            f"Width/height must be multiples of 64 for this model. "
+            f"Got ({args.width}, {args.height})."
+        )
+    if args.video_duration < 0:
+        raise ValueError(f"video_duration must be >= 0. Got {args.video_duration}.")
+
+
+def mode_prefix_and_logfile(args):
+    """
+    Decide:
+      - logical 'mode' label,
+      - filename prefix,
+      - JSONL logfile name.
+    """
+    if args.no_te:
+        mode = "baseline_bf16"
+        prefix = "bf16_"
+        jsonl_name = "bf16_test.jsonl"
+    else:
+        if args.disable_fp8:
+            mode = "te_bf16"
+            prefix = "te_bf16_"
+            jsonl_name = "te_bf16_test.jsonl"
+        else:
+            mode = "te_fp8"
+            prefix = "te_fp8_"
+            jsonl_name = "te_fp8_test.jsonl"
+    return mode, prefix, jsonl_name
+
+
+# -------------------------------
+# CLI parsing
+# -------------------------------
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Generate a video using Kandinsky 5 with TE-FP8 DiT"
+        description="TE-enhanced Kandinsky 5 T2V test harness"
     )
     parser.add_argument(
         "--config",
         type=str,
-        default="./configs/te_fp8_k5_pro_t2v_10s_sft_hd.yaml",
-        help="Config file (TE-FP8 variant of Pro T2V 10s SFT HD)",
+        required=True,
+        help="YAML config file for the model (e.g. ./configs/te_fp8_k5_pro_t2v_10s_sft_hd.yaml)",
     )
     parser.add_argument(
         "--prompt",
         type=str,
-        default="A small spinning cube.",
-        help="Positive prompt to generate video",
+        required=True,
+        help="Positive text prompt",
     )
     parser.add_argument(
         "--negative_prompt",
@@ -51,164 +103,116 @@ def parse_args():
     parser.add_argument(
         "--width",
         type=int,
-        default=128,
-        help="Output width in pixels (must be a multiple of 128 for this model)",
+        default=768,
+        help="Video width in pixels (must be multiple of 64)",
     )
     parser.add_argument(
         "--height",
         type=int,
-        default=128,
-        help="Output height in pixels (must be a multiple of 128 for this model)",
+        default=512,
+        help="Video height in pixels (must be multiple of 64)",
     )
     parser.add_argument(
         "--video_duration",
         type=int,
-        default=1,
-        help="Duration of the video in seconds (0 for a single image)",
+        default=5,
+        help="Duration of the video in whole seconds (0 => image)",
     )
     parser.add_argument(
         "--expand_prompt",
-        action="store_true",
-        default=False,
-        help="Enable prompt expansion (default: disabled)",
+        type=int,
+        default=0,
+        help="Whether to use prompt expansion (1) or not (0).",
     )
     parser.add_argument(
         "--sample_steps",
         type=int,
         default=None,
-        help="Number of sampling steps (default: use config value)",
+        help="Number of sampling steps (defaults to config num_steps if None).",
     )
     parser.add_argument(
         "--guidance_weight",
         type=float,
         default=None,
-        help="Guidance weight (default: use config value)",
+        help="CFG guidance weight (defaults to config value if None).",
     )
     parser.add_argument(
         "--scheduler_scale",
         type=float,
-        default=5.0,
-        help="Scheduler scale (default: 5.0)",
-    )
-    parser.add_argument(
-        "--output_filename",
-        type=str,
-        default=None,
-        help="Explicit output filename (otherwise auto-named under k5pro_output/)",
+        default=10.0,
+        help="Scheduler scale.",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help="Optional seed (masked to 31 bits). If omitted, a random seed is used inside the pipeline.",
+        help="Random seed (<= 2^32-1). If None, a 31-bit seed is sampled.",
     )
+
+    # TE controls
     parser.add_argument(
-        "--offload",
+        "--no_te",
         action="store_true",
         default=False,
-        help="Offload models to CPU between stages to save memory",
-    )
-    parser.add_argument(
-        "--magcache",
-        action="store_true",
-        default=False,
-        help="Use MagCache (for 50-step models only)",
-    )
-    parser.add_argument(
-        "--qwen_quantization",
-        action="store_true",
-        default=False,
-        help="Use quantized Qwen2.5-VL (4-bit) for text encoding",
-    )
-    parser.add_argument(
-        "--attention_engine",
-        type=str,
-        default="auto",
-        choices=["flash_attention_2", "flash_attention_3", "sdpa", "sage", "auto"],
-        help="Full attention algorithm for <=5 second generation",
-    )
-    parser.add_argument(
-        "--te_backend",
-        type=str,
-        default="te-fp8",
-        choices=["te-fp8"],
-        help="TE backend to use (currently only te-fp8 is implemented)",
+        help="Disable Transformer Engine; use baseline bf16 DiT.",
     )
     parser.add_argument(
         "--disable_fp8",
         action="store_true",
         default=False,
-        help="Run TE DiT without FP8 autocast (TE-BF16), useful for debugging/speed comparison.",
+        help="Use TE-backed DiT but *without* FP8 (te_bf16 mode).",
     )
     parser.add_argument(
-        "--no_te",
+        "--te_backend",
+        type=str,
+        default="te-fp8",
+        choices=["te-fp8", "te_fp8"],
+        help="TE DiT backend identifier.",
+    )
+
+    # Misc existing flags
+    parser.add_argument(
+        "--offload",
         action="store_true",
         default=False,
-        help="Use the baseline bf16 DiT (no TE swap).",
+        help="Offload models to save memory or not.",
+    )
+    parser.add_argument(
+        "--magcache",
+        action="store_true",
+        default=False,
+        help="Use MagCache (for 50-step models only).",
+    )
+    parser.add_argument(
+        "--qwen_quantization",
+        action="store_true",
+        default=False,
+        help="Use quantized Qwen2.5-VL model (4-bit).",
+    )
+    parser.add_argument(
+        "--attention_engine",
+        type=str,
+        default="auto",
+        help="Full attention algorithm for <=5s generation.",
+        choices=["flash_attention_2", "flash_attention_3", "sdpa", "sage", "auto"],
     )
     parser.add_argument(
         "--hf_token",
         type=str,
         default=None,
-        help="Hugging Face token (for restricted models / VAEs)",
+        help="HF token if needed for restricted models (e.g. FLUX.1-dev VAE).",
     )
+
     return parser.parse_args()
 
 
-def sanitize_seed(seed: int | None) -> int | None:
-    """
-    Make sure the seed fits comfortably within 32-bit limits.
-    We mask to 31 bits for extra safety.
-    """
-    if seed is None:
-        return None
-    return seed & 0x7FFFFFFF
+# -------------------------------
+# Pipeline construction
+# -------------------------------
 
-
-def make_default_output_path(prompt: str, time_length: int) -> str:
-    os.makedirs("k5pro_output", exist_ok=True)
-    now = datetime.now()
-    ts = now.strftime("%Y%m%d_%H%M%S")
-
-    # Safe-ish prompt slug
-    base = prompt.strip().replace(" ", "_")
-    base = "".join(ch for ch in base if ch.isalnum() or ch in ("_", "-"))
-    if len(base) > 48:
-        base = base[:48]
-    if not base:
-        base = "sample"
-
-    # Use te_fp8_ prefix for TE runs; baseline will still get a similar name.
-    prefix = "te_fp8"
-    ext = ".png" if time_length == 0 else ".mp4"
-    filename = f"{prefix}_{ts}_{base}{ext}"
-    return os.path.join("k5pro_output", filename)
-
-
-def main():
-    disable_warnings()
-    args = parse_args()
-
-    if args.hf_token:
-        set_hf_token(args.hf_token)
-
-    # Sanitize seed if provided
-    user_seed = sanitize_seed(args.seed)
-
-    # Device map – simple single-GPU default
-    device_map = {"dit": "cuda:0", "vae": "cuda:0", "text_embedder": "cuda:0"}
-
-    print("=== TE T2V Test ===")
-    print(f"Config:         {args.config}")
-    print(f"Resolution:     {args.height}x{args.width}")
-    print(f"Duration:       {args.video_duration}s")
-    print(f"Sample steps:   {args.sample_steps if args.sample_steps is not None else 'config default'}")
-    print(f"TE backend:     {args.te_backend if not args.no_te else 'baseline (no TE)'}")
-    print(f"FP8 enabled:    {not args.disable_fp8 and not args.no_te}")
-    print()
-
-    # Build the standard T2V pipeline first to reuse all loading logic (config, text embedder, VAE, etc.)
-    base_pipe = get_T2V_pipeline(
+def build_pipeline(args, device_map):
+    # Base T2V pipeline
+    pipe = get_T2V_pipeline(
         device_map=device_map,
         conf_path=args.config,
         offload=args.offload,
@@ -218,75 +222,143 @@ def main():
     )
 
     if args.no_te:
-        # Baseline bf16 path, no TE swap
-        pipe = base_pipe
         print("[te_test] Using baseline bf16 DiT (no TE).")
+        return pipe
+
+    # TE path: swap in TE-backed DiT
+    print(
+        f"[te_test] Swapping baseline DiT -> TE DiT "
+        f"(backend={args.te_backend}, enable_fp8={not args.disable_fp8})..."
+    )
+    dit_conf = pipe.conf.model.dit_params
+
+    te_dit = get_te_dit(
+        dit_conf,
+        backend=args.te_backend,
+        enable_fp8=not args.disable_fp8,
+    )
+    # Follow existing device_map conventions
+    te_dit = te_dit.to(device_map["dit"])
+    pipe.dit = te_dit
+    return pipe
+
+
+# -------------------------------
+# JSONL logging
+# -------------------------------
+
+def append_jsonl_log(
+    args,
+    seed: int,
+    mode: str,
+    output_path: str,
+    timestamp: str,
+    jsonl_path: str,
+):
+    record = {
+        "timestamp": timestamp,
+        "config_path": os.path.abspath(args.config),
+        "video_path": output_path,
+        "prompt": args.prompt,
+        "negative_prompt": args.negative_prompt,
+        "seed": int(seed),
+        "width": int(args.width),
+        "height": int(args.height),
+        "time_length": int(args.video_duration),
+        "scheduler_scale": float(args.scheduler_scale),
+        "num_steps": None if args.sample_steps is None else int(args.sample_steps),
+        "guidance_weight": None if args.guidance_weight is None else float(args.guidance_weight),
+        "mode": mode,  # "baseline_bf16", "te_bf16", "te_fp8"
+        "te_backend": None if args.no_te else args.te_backend,
+        "fp8_enabled": False if args.no_te else (not args.disable_fp8),
+        "expand_prompts": bool(args.expand_prompt),
+    }
+
+    os.makedirs(os.path.dirname(jsonl_path), exist_ok=True)
+    with open(jsonl_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+# -------------------------------
+# Main
+# -------------------------------
+
+def main():
+    disable_warnings()
+    args = parse_args()
+    validate_args(args)
+
+    if args.hf_token:
+        set_hf_token(args.hf_token)
+
+    # Seed: explicit or 31-bit random
+    if args.seed is None:
+        seed = random.randrange(0, 2**31)
     else:
-        # Build a TE DiT from the same config and copy weights from the original DiT
-        print(
-            f"[te_test] Swapping baseline DiT -> TE DiT (backend={args.te_backend}, "
-            f"enable_fp8={not args.disable_fp8})..."
-        )
-        te_dit = get_te_dit(
-            base_pipe.conf.model.dit_params,
-            backend=args.te_backend,
-            enable_fp8=not args.disable_fp8,
-        )
-        te_dit = te_dit.to(device_map["dit"])
-        te_dit.load_state_dict(base_pipe.dit.state_dict(), strict=False)
+        seed = int(args.seed) & 0xFFFFFFFF
+    set_seed_all(seed)
 
-        # Construct the TE pipeline shell around the TE DiT
-        pipe = Kandinsky5T2VTEPipeline(
-            device_map=device_map,
-            dit=te_dit,
-            text_embedder=base_pipe.text_embedder,
-            vae=base_pipe.vae,
-            local_dit_rank=base_pipe.local_dit_rank,
-            world_size=base_pipe.world_size,
-            conf=base_pipe.conf,
-            offload=args.offload,
-            device_mesh=getattr(base_pipe, "device_mesh", None),
-        )
+    mode, prefix, jsonl_name = mode_prefix_and_logfile(args)
 
-        # Free the original BF16 DiT to reclaim memory
-        del base_pipe.dit
-        del base_pipe
-        torch.cuda.empty_cache()
-
-    # Output path
-    time_length = int(args.video_duration)
-    if args.output_filename is None:
-        output_filename = make_default_output_path(args.prompt, time_length)
-    else:
-        output_filename = args.output_filename
-    out_dir = os.path.dirname(output_filename)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-
-    print(f"[te_test] Output will be saved to: {output_filename}")
+    print("=== TE T2V Test ===")
+    print(f"Config:         {args.config}")
+    print(f"Resolution:     {args.width}x{args.height}")
+    print(f"Duration:       {args.video_duration}s")
+    print(f"Sample steps:   {args.sample_steps}")
+    print(f"Mode:           {mode}")
+    print(f"TE backend:     {args.te_backend if not args.no_te else 'none'}")
+    print(f"FP8 enabled:    {False if args.no_te else (not args.disable_fp8)}")
+    print(f"Seed:           {seed}")
     print()
 
-    # Call pipeline
+    device_map = {"dit": "cuda:0", "vae": "cuda:0", "text_embedder": "cuda:0"}
+    pipe = build_pipeline(args, device_map)
+
+    # Output naming: prefix + timestamp + seed + truncated prompt
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_prompt = args.prompt.replace(" ", "_")
+    if len(safe_prompt) > 64:
+        safe_prompt = safe_prompt[:64]
+
+    out_dir = "k5pro_output"
+    os.makedirs(out_dir, exist_ok=True)
+
+    output_filename = f"{prefix}{timestamp}_seed{seed}_{safe_prompt}.mp4"
+    output_path = os.path.join(out_dir, output_filename)
+
+    print(f"[te_test] Output will be saved to: {output_path}")
+
     start_time = time.perf_counter()
-    result = pipe(
-        args.prompt,
-        time_length=time_length,
-        width=args.width,
-        height=args.height,
-        num_steps=args.sample_steps,
-        guidance_weight=args.guidance_weight,
-        scheduler_scale=args.scheduler_scale,
-        negative_caption=args.negative_prompt,
-        expand_prompts=args.expand_prompt,
-        save_path=output_filename,
-        seed=user_seed,
+    try:
+        _ = pipe(
+            args.prompt,
+            time_length=args.video_duration,
+            width=args.width,
+            height=args.height,
+            num_steps=args.sample_steps,
+            guidance_weight=args.guidance_weight,
+            scheduler_scale=args.scheduler_scale,
+            negative_caption=args.negative_prompt,
+            expand_prompts=bool(args.expand_prompt),
+            save_path=output_path,
+            seed=seed,
+        )
+    finally:
+        elapsed = time.perf_counter() - start_time
+        print(f"TIME ELAPSED: {elapsed:.2f} seconds")
+
+    jsonl_path = os.path.join(out_dir, jsonl_name)
+    append_jsonl_log(
+        args=args,
+        seed=seed,
+        mode=mode,
+        output_path=output_path,
+        timestamp=timestamp,
+        jsonl_path=jsonl_path,
     )
-    elapsed = time.perf_counter() - start_time
 
-    print(f"TIME ELAPSED: {elapsed:.2f} seconds")
-    print(f"Generated file is saved to {output_filename}")
-
-    return result
+    print(f"[te_test] Logged run to: {jsonl_path}")
+    print(f"Generated file is saved to {output_path}")
 
 
 if __name__ == "__main__":
