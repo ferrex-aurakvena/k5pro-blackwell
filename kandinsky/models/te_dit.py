@@ -166,8 +166,16 @@ class TEMultiheadSelfAttentionDec(nn.Module):
         )[0].flatten(-2, -1)
         return out
 
+    @torch.compile(mode="max-autotune-no-cudagraphs", dynamic=True)
     def nabla(self, query, key, value, sparse_params=None):
-        # Identical structure to the upstream implementation, but using TE-backed Q/K/V.
+        """
+        NABLA sparse attention using FlexAttention + BlockMask.
+
+        IMPORTANT: This must be under torch.compile so FlexAttention can lower
+        to a block-sparse kernel. If this runs in eager mode, FlexAttention
+        falls back to a dense path (sdpa_dense) which will try to build a
+        full SxS attention matrix and immediately OOM at 1024x1024 x 10s.
+        """
         query = query.unsqueeze(0).transpose(1, 2).contiguous()
         key = key.unsqueeze(0).transpose(1, 2).contiguous()
         value = value.unsqueeze(0).transpose(1, 2).contiguous()
