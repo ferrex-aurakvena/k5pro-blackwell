@@ -1,3 +1,5 @@
+# NOTE: this is not the recommended install path for this repo -- leaving it for posterity
+#   Instead, focus on the recommended path with NVIDIA NGC container / requirements-core.txt 
 ipykernel
 ipywidgets
 pillow

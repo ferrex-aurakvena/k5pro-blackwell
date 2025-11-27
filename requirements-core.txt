@@ -1,0 +1,37 @@
+# requirements-core.txt
+# Install these INSIDE the NGC PyTorch container.
+# The container already provides:
+#   - torch / torchvision / torchaudio
+#   - CUDA / cuDNN / TransformerEngine
+# so we deliberately do NOT list those here.
+
+ipykernel
+ipywidgets
+
+pillow
+packaging
+requests
+anyio
+pydantic
+aiohttp
+websocket-client
+beautifulsoup4
+
+transformers>=4.56.2
+diffusers
+accelerate
+einops
+
+imageio
+imageio-ffmpeg
+opencv-python
+av
+
+pytest
+tqdm
+omegaconf
+numpy
+
+ninja
+bitsandbytes
+peft
