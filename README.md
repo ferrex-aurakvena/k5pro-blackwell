@@ -2,14 +2,14 @@
 
 This is an **experimental fork** of the official [Kandinsky 5](https://github.com/kandinskylab/kandinsky-5) repository, focused on:
 
-- **NVIDIA Blackwell GPUs** (e.g. RTX PRO 6000 Blackwell Max-Q, future RTX 50-series)
+- **NVIDIA Blackwell GPUs** (focused on RTX PRO 6000 Blackwell at the moment)
 - **High-quality video generation** with Kandinsky 5 Pro T2V
-- **Performance optimizations** using NVIDIA’s Transformer Engine (TE) and FP8 kernels
+- **Performance optimizations** using NVIDIA’s Transformer Engine (TE) and FP8 kernels (waiting for full NVFP4 support)
 
 The goal of this fork is to explore “turbo” compute backends for Kandinsky Pro video models on modern NVIDIA hardware (starting with FP8 on Blackwell, with NVFP4 kept as an experimental path).
 
 > ⚠️ **Status:** Work in progress.  
-> This fork is currently aimed at **power users with NVIDIA Blackwell GPUs** and the NVIDIA NGC PyTorch Docker image. A plain “pip install and run” experience may come later, but is not guaranteed.
+> This fork is currently aimed at **power users with NVIDIA Blackwell GPUs** and the NVIDIA NGC PyTorch Docker image.
 
 ---
 
@@ -34,15 +34,15 @@ Other environments (bare-metal venvs, non-NGC containers, older GPUs) are consid
 1. **Clone this fork**
 
    ```bash
-   git clone <YOUR_FORK_URL> kandinsky5-blackwell
-   cd kandinsky5-blackwell
+   git clone https://github.com/ferrex-aurakvena/k5pro-blackwell.git k5pro-blackwell
+   cd k5pro-blackwell
    ```
 
 2. **Start the NGC PyTorch container**
 
    The repo includes a convenience script that:
 
-   * Pulls `nvcr.io/nvidia/pytorch:25.10-py3` (once)
+   * Pulls `nvcr.io/nvidia/pytorch:25.10-py3` (once — about 10 GB download)
    * Mounts the repo at `/workspace/k5`
    * Sets safe IPC / ulimit settings for PyTorch
 
