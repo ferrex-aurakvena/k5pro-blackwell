@@ -7,6 +7,7 @@ This is an **experimental fork** of the official [Kandinsky 5](https://github.co
 - **Performance optimizations** using NVIDIA’s Transformer Engine (TE) and FP8 kernels (waiting for full NVFP4 support)
 
 The goal of this fork is to explore “turbo” compute backends for Kandinsky Pro video models on modern NVIDIA hardware (starting with FP8 on Blackwell, with NVFP4 kept as an experimental path).
+**The TE FP8 path currently achieves about 25% speed improvement over BF16.**
 
 > ⚠️ **Status:** Work in progress.  
 > This fork is currently aimed at **power users with NVIDIA Blackwell GPUs** and the NVIDIA NGC PyTorch Docker image.
