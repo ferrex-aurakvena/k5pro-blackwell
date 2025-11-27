@@ -13,7 +13,6 @@ import torch
 from kandinsky.utils import set_hf_token
 from kandinsky import get_T2V_pipeline
 from kandinsky.models.te_dit import get_dit as get_te_dit
-from kandinsky.te_t2v_pipeline import Kandinsky5T2VPipeline as TET2VPipeline
 
 
 # -------------------------------
@@ -73,6 +72,38 @@ def mode_prefix_and_logfile(args):
             prefix = "te_fp8_"
             jsonl_name = "te_fp8_test.jsonl"
     return mode, prefix, jsonl_name
+
+
+# -------------------------------
+# Relax upstream resolution guard
+# -------------------------------
+
+def relax_resolution_check(pipe, height: int, width: int):
+    """
+    Upstream Kandinsky5T2VPipeline enforces a fixed set of (H, W) pairs via
+    self.RESOLUTIONS[self.resolution].
+
+    We *do not* modify kandinsky/t2v_pipeline.py.
+    Instead, we patch the instance so that the requested (height, width)
+    is considered valid for the current resolution.
+    """
+    if not hasattr(pipe, "RESOLUTIONS") or not hasattr(pipe, "resolution"):
+        return
+
+    res_table = getattr(pipe, "RESOLUTIONS", None)
+    res_key = getattr(pipe, "resolution", None)
+    if not isinstance(res_table, dict):
+        return
+    if res_key not in res_table:
+        return
+
+    hw = (height, width)
+    cur_list = list(res_table.get(res_key, []))
+    if hw not in cur_list:
+        cur_list.append(hw)
+        res_table[res_key] = cur_list
+        pipe.RESOLUTIONS = res_table
+        print(f"[te_test] Relaxed resolution guard: added {hw} to RESOLUTIONS[{res_key}].")
 
 
 # -------------------------------
@@ -212,14 +243,8 @@ def parse_args():
 # -------------------------------
 
 def build_pipeline(args, device_map):
-    """
-    Build a pipeline that:
-      - Reuses get_T2V_pipeline to load weights / text encoder / VAE.
-      - Wraps those components in our flexible TE T2V pipeline (no resolution whitelist).
-      - Optionally swaps DiT for TE-backed DiT.
-    """
-    # First, use upstream helper to load everything
-    base_pipe = get_T2V_pipeline(
+    # Base T2V pipeline (upstream)
+    pipe = get_T2V_pipeline(
         device_map=device_map,
         conf_path=args.config,
         offload=args.offload,
@@ -228,38 +253,22 @@ def build_pipeline(args, device_map):
         attention_engine=args.attention_engine,
     )
 
-    # Wrap in TE T2V pipeline which has relaxed resolution constraints
-    pipe = TET2VPipeline(
-        device_map=device_map,
-        dit=base_pipe.dit,
-        text_embedder=base_pipe.text_embedder,
-        vae=base_pipe.vae,
-        local_dit_rank=getattr(base_pipe, "local_dit_rank", 0),
-        world_size=getattr(base_pipe, "world_size", 1),
-        conf=base_pipe.conf,
-        offload=base_pipe.offload,
-        device_mesh=getattr(base_pipe, "device_mesh", None),
-    )
-
     if args.no_te:
-        print("[te_test] Using baseline bf16 DiT (no TE) with flexible resolution pipeline.")
+        print("[te_test] Using baseline bf16 DiT (no TE).")
         return pipe
 
-    # TE path: swap in TE-backed DiT
+    # TE path: wrap the *existing, weight-loaded* DiT with our TE/FP8 wrapper
     print(
         f"[te_test] Swapping baseline DiT -> TE DiT "
         f"(backend={args.te_backend}, enable_fp8={not args.disable_fp8})..."
     )
-    dit_conf = pipe.conf.model.dit_params
-
+    base_dit = pipe.dit.to(device_map["dit"])
     te_dit = get_te_dit(
-        dit_conf,
+        base_dit,
         backend=args.te_backend,
         enable_fp8=not args.disable_fp8,
     )
-    # Follow existing device_map conventions
-    te_dit = te_dit.to(device_map["dit"])
-    pipe.dit = te_dit
+    pipe.dit = te_dit.to(device_map["dit"])
     return pipe
 
 
@@ -333,6 +342,9 @@ def main():
 
     device_map = {"dit": "cuda:0", "vae": "cuda:0", "text_embedder": "cuda:0"}
     pipe = build_pipeline(args, device_map)
+
+    # Relax upstream size guard so we can use arbitrary multiples of 64
+    relax_resolution_check(pipe, args.height, args.width)
 
     # Output naming: prefix + timestamp + seed + truncated prompt
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
