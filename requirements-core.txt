@@ -34,3 +34,8 @@ omegaconf
 ninja
 bitsandbytes
 peft
+
+# necessary for running pipeline scripts (to locate model files)
+huggingface_hub>=0.24.0
+
+

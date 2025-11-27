@@ -1,98 +1,390 @@
+import json
+import logging
+import struct
+from typing import Optional, Union
+
+import transformers
 import torch
+from torch.distributed.device_mesh import DeviceMesh
+import torchvision
+from peft import (
+    PeftConfig,
+    LoraConfig,
+    inject_adapter_in_model,
+    set_peft_model_state_dict,
+)
+from safetensors.torch import load_file
+from torchvision.transforms import ToPILImage
 
-from .t2v_pipeline import Kandinsky5T2VPipeline
-from .models.te_dit import get_dit as get_te_dit
+from .generation_utils import generate_sample
+
+torch._dynamo.config.suppress_errors = True
+torch._dynamo.config.verbose = True
 
 
-class Kandinsky5T2VTEPipeline(Kandinsky5T2VPipeline):
+def read_safetensors_json(file_path):
+    """Reads the metadata (JSON header) from a safetensors file."""
+    with open(file_path, "rb") as f:
+        header_size_bytes = f.read(8)
+        header_size = struct.unpack("Q", header_size_bytes)[0]
+        header_bytes = f.read(header_size)
+        header_str = header_bytes.decode("utf-8")
+        header = json.loads(header_str)
+        return header
+
+
+class Kandinsky5T2VTEPipeline:
     """
-    TE-enhanced Text-to-Video pipeline.
+    TE-enhanced T2V pipeline.
 
-    Thin wrapper around the original `Kandinsky5T2VPipeline` that swaps the
-    DiT backbone for a Transformer-Engine FP8 variant.
+    This is a near-copy of the upstream Kandinsky5T2VPipeline, but:
 
-    Usage (Pro 10s SFT, HD):
+      - It does NOT enforce the original hard-coded resolution table.
+      - Instead, it allows arbitrary resolutions that are multiples of 128,
+        which are compatible with the VAE + patching + fractal NABLA.
+      - It’s intended to be used with a TE-FP8 DiT (DiffusionTransformer3DTEFP8),
+        but is otherwise agnostic: it just calls `self.dit`.
 
-        from omegaconf import OmegaConf
-        from kandinsky.te_t2v_pipeline import Kandinsky5T2VTEPipeline
-        from kandinsky.models.text_embedders import get_text_embedder
-        from kandinsky.models.vae import get_vae
-
-        conf = OmegaConf.load("configs/te_fp8_k5_pro_t2v_10s_sft_hd.yaml")
-
-        text_embedder = get_text_embedder(conf)
-        vae = get_vae(conf)
-
-        device_map = {"dit": "cuda", "vae": "cuda", "text_embedder": "cuda"}
-
-        pipe = Kandinsky5T2VTEPipeline.from_config(
-            device_map=device_map,
-            text_embedder=text_embedder,
-            vae=vae,
-            conf=conf,
-            backend="te-fp8",
-        )
-
-        video = pipe(
-            text="A cinematic description...",
-            time_length=10,
-            width=1024,
-            height=576,
-            seed=42,
-        )
+    We keep the LoRA / PEFT hooks and prompt expansion behavior unchanged.
     """
 
-    backend: str = "te-fp8"
-
-    def __init__(self, *args, backend: str = "te-fp8", **kwargs):
-        # We don't alter the base pipeline internals; we only record which
-        # TE backend was used to construct the DiT.
-        super().__init__(*args, **kwargs)
-        self.backend = backend
-
-    @classmethod
-    def from_config(
-        cls,
-        device_map,
+    def __init__(
+        self,
+        device_map: Union[str, torch.device, dict],
+        dit,
         text_embedder,
         vae,
-        conf,
-        backend: str = "te-fp8",
         local_dit_rank: int = 0,
         world_size: int = 1,
+        conf=None,
         offload: bool = False,
-        device_mesh=None,
+        device_mesh: DeviceMesh = None,
     ):
-        """
-        Convenience constructor that builds a TE DiT directly from the config.
+        self.dit = dit
+        self.text_embedder = text_embedder
+        self.vae = vae
 
-        Parameters
-        ----------
-        device_map:
-            Same as in the original pipeline
-            (e.g. {"dit": "cuda", "vae": "cuda", "text_embedder": "cuda"}).
-        text_embedder:
-            Pre-built text embedder model.
-        vae:
-            Pre-built VAE model.
-        conf:
-            Full OmegaConf configuration (the same one you pass to the
-            original pipeline). We expect `conf.model.dit_params` to exist.
-        backend:
-            Which TE backend to use. Currently only "te-fp8" is implemented.
-        """
-        dit_conf = conf.model.dit_params
-        te_dit = get_te_dit(dit_conf, backend=backend)
+        self.device_map = device_map
+        self.local_dit_rank = local_dit_rank
+        self.world_size = world_size
+        self.conf = conf
+        self.num_steps = conf.model.num_steps
+        self.guidance_weight = conf.model.guidance_weight
 
-        return cls(
-            device_map=device_map,
-            dit=te_dit,
-            text_embedder=text_embedder,
-            vae=vae,
-            local_dit_rank=local_dit_rank,
-            world_size=world_size,
-            conf=conf,
-            offload=offload,
-            device_mesh=device_mesh,
-            backend=backend,
+        self.offload = offload
+
+        self._hf_peft_config_loaded = False
+        self.peft_config = {}
+        self.peft_triggers = {}
+        self.peft_trigger = ""
+        self.device_mesh = device_mesh
+
+    def expand_prompt(self, prompt):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"""You are a prompt beautifier that transforms short user video descriptions into rich, detailed English prompts specifically optimized for video generation models.
+        Here are some example descriptions from the dataset that the model was trained:
+        1. "In a dimly lit room with a cluttered background, papers are pinned to the wall and various objects rest on a desk. Three men stand present: one wearing a red sweater, another in a black sweater, and the third in a gray shirt. The man in the gray shirt speaks and makes hand gestures, while the other two men look forward. The camera remains stationary, focusing on the three men throughout the sequence. A gritty and realistic visual style prevails, marked by a greenish tint that contributes to a moody atmosphere. Low lighting casts shadows, enhancing the tense mood of the scene."
+        2. "In an office setting, a man sits at a desk wearing a gray sweater and seated in a black office chair. A wooden cabinet with framed pictures stands beside him, alongside a small plant and a lit desk lamp. Engaged in a conversation, he makes various hand gestures to emphasize his points. His hands move in different positions, indicating different ideas or points. The camera remains stationary, focusing on the man throughout. Warm lighting creates a cozy atmosphere. The man appears to be explaining something. The overall visual style is professional and polished, suitable for a business or educational context."
+        3. "A person works on a wooden object resembling a sunburst pattern, holding it in their left hand while using their right hand to insert a thin wire into the gaps between the wooden pieces. The background features a natural outdoor setting with greenery and a tree trunk visible. The camera stays focused on the hands and the wooden object throughout, capturing the detailed process of assembling the wooden structure. The person carefully threads the wire through the gaps, ensuring the wooden pieces are securely fastened together. The scene unfolds with a naturalistic and instructional style, emphasizing the craftsmanship and the methodical steps taken to complete the task."
+        IImportantly! These are just examples from a large training dataset of 200 million videos.
+        Rewrite Prompt: "{prompt}" to get high-quality video generation. Answer only with expanded prompt.""",
+                    },
+                ],
+            }
+        ]
+        text = self.text_embedder.embedder.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
         )
+        inputs = self.text_embedder.embedder.processor(
+            text=[text],
+            images=None,
+            videos=None,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self.text_embedder.embedder.model.device)
+        generated_ids = self.text_embedder.embedder.model.generate(
+            **inputs, max_new_tokens=256
+        )
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_text = self.text_embedder.embedder.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+        return output_text[0]
+
+    def __call__(
+        self,
+        text: str,
+        time_length: int = 5,  # time in seconds 0 if you want generate image
+        width: int = 768,
+        height: int = 512,
+        seed: int = None,
+        num_steps: int = None,
+        guidance_weight: float = None,
+        scheduler_scale: float = 10.0,
+        negative_caption: str = "Static, 2D cartoon, cartoon, 2d animation, paintings, images, worst quality, low quality, ugly, deformed, walking backwards",
+        expand_prompts: bool = True,
+        save_path: str = None,
+        progress: bool = True,
+    ):
+        num_steps = self.num_steps if num_steps is None else num_steps
+        guidance_weight = self.guidance_weight if guidance_weight is None else guidance_weight
+
+        # make sure we don't end up with float num_frames
+        time_length = int(time_length)
+
+        # SEED
+        if seed is None:
+            if self.local_dit_rank == 0:
+                seed = torch.randint(2**32 - 1, (1,)).to(self.local_dit_rank)
+            else:
+                seed = torch.empty((1,), dtype=torch.int64).to(self.local_dit_rank)
+
+            if self.world_size > 1:
+                torch.distributed.broadcast(seed, 0)
+
+            seed = seed.item()
+
+        # --- Flexible resolution check for TE/NABLA path ---
+        # We allow arbitrary resolutions (for quick tests like 128x128),
+        # as long as they are compatible with the current VAE + patching +
+        # fractal NABLA setup. With patch_size=(1,2,2), that effectively
+        # means multiples of 128 in both dimensions.
+        if height <= 0 or width <= 0:
+            raise ValueError(
+                f"Height and width must be positive integers. Got ({height}, {width})."
+            )
+
+        if (height % 128) != 0 or (width % 128) != 0:
+            raise ValueError(
+                "Height and width must be multiples of 128 for this model "
+                f"(got {height}x{width})."
+            )
+
+        # PREPARATION
+        num_frames = 1 if time_length == 0 else time_length * 24 // 4 + 1
+
+        caption = text
+        if expand_prompts:
+            transformers.set_seed(seed)
+            if self.local_dit_rank == 0:
+                if self.offload:
+                    self.text_embedder = self.text_embedder.to(
+                        self.device_map["text_embedder"]
+                    )
+                caption = self.peft_trigger + self.expand_prompt(caption)
+            if self.world_size > 1:
+                caption = [caption]
+                torch.distributed.broadcast_object_list(caption, 0)
+                caption = caption[0]
+
+        shape = (1, num_frames, height // 8, width // 8, 16)
+
+        # GENERATION
+        images = generate_sample(
+            shape,
+            caption,
+            self.dit,
+            self.vae,
+            self.conf,
+            text_embedder=self.text_embedder,
+            num_steps=num_steps,
+            guidance_weight=guidance_weight,
+            scheduler_scale=scheduler_scale,
+            negative_caption=negative_caption,
+            seed=seed,
+            device=self.device_map["dit"],
+            vae_device=self.device_map["vae"],
+            text_embedder_device=self.device_map["text_embedder"],
+            progress=progress,
+            offload=self.offload,
+            tp_mesh=self.device_mesh,
+        )
+        torch.cuda.empty_cache()
+
+        if self.offload:
+            self.text_embedder = self.text_embedder.to(
+                device=self.device_map["text_embedder"]
+            )
+
+        # RESULTS
+        if self.local_dit_rank == 0:
+            if time_length == 0:
+                return_images = []
+                for image in images.squeeze(2).cpu():
+                    return_images.append(ToPILImage()(image))
+                if save_path is not None:
+                    if isinstance(save_path, str):
+                        save_path = [save_path]
+                    if len(save_path) == len(return_images):
+                        for path, image in zip(save_path, return_images):
+                            image.save(path)
+                return return_images
+            else:
+                if save_path is not None:
+                    if isinstance(save_path, str):
+                        save_path = [save_path]
+                    if len(save_path) == len(images):
+                        for path, video in zip(save_path, images):
+                            torchvision.io.write_video(
+                                path,
+                                video.float().permute(1, 2, 3, 0).cpu().numpy(),
+                                fps=24,
+                                options={"crf": "5"},
+                            )
+                return images
+
+    # ---- LoRA / PEFT helpers (unchanged from upstream t2v_pipeline) ----
+
+    def load_adapter(
+        self,
+        adapter_config: Union[PeftConfig, str],
+        adapter_path: Optional[str] = None,
+        adapter_name: Optional[str] = None,
+        trigger: Optional[str] = None,
+    ) -> None:
+        if adapter_name is None:
+            adapter_name = "default"
+        if self._hf_peft_config_loaded and adapter_name in self.peft_config:
+            raise ValueError(
+                f"Adapter with name {adapter_name} already exists. Please use a different name."
+            )
+
+        if not isinstance(adapter_config, PeftConfig):
+            try:
+                with open(adapter_config, "r") as f:
+                    adapter_config = json.load(f)
+                adapter_config = LoraConfig(**adapter_config)
+            except Exception:
+                raise TypeError(
+                    "adapter_config should be an instance of PeftConfig or a path to a json file."
+                )
+        self.peft_config[adapter_name] = adapter_config
+
+        inject_adapter_in_model(adapter_config, self.dit, adapter_name)
+
+        if not self._hf_peft_config_loaded:
+            self._hf_peft_config_loaded = True
+        adapter_state_dict = load_file(adapter_path)
+        adapter_metadata = read_safetensors_json(adapter_path)
+        if trigger is not None:
+            self.peft_trigger = trigger
+        else:
+            if (
+                "__metadata__" in adapter_metadata
+                and "trigger" in adapter_metadata["__metadata__"]
+            ):
+                self.peft_trigger = adapter_metadata["__metadata__"]["trigger"]
+            else:
+                self.peft_trigger = ""
+        self.peft_triggers[adapter_name] = self.peft_trigger
+
+        processed_adapter_state_dict = {}
+        for key, value in adapter_state_dict.items():
+            new_key = key
+            for prefix in ["base_model.model.", "transformer."]:
+                if new_key.startswith(prefix):
+                    new_key = new_key[len(prefix) :]
+                    break
+
+            new_key = new_key.replace(".default", "")
+            processed_adapter_state_dict[new_key] = value
+
+        incompatible_keys = set_peft_model_state_dict(
+            self.dit, processed_adapter_state_dict, adapter_name
+        )
+
+        if incompatible_keys is not None:
+            err_msg = ""
+            origin_name = "state_dict"
+            if hasattr(incompatible_keys, "unexpected_keys") and len(
+                incompatible_keys.unexpected_keys
+            ) > 0:
+                err_msg = (
+                    f"Loading adapter weights from {origin_name} led to unexpected keys "
+                    f"not found in the model: {', '.join(incompatible_keys.unexpected_keys)}. "
+                )
+
+            missing_keys = getattr(incompatible_keys, "missing_keys", None)
+            if missing_keys:
+                lora_missing_keys = [
+                    k for k in missing_keys if "lora_" in k and adapter_name in k
+                ]
+                if lora_missing_keys:
+                    err_msg += (
+                        f"Loading adapter weights from {origin_name} led to missing keys "
+                        f"in the model: {', '.join(lora_missing_keys)}"
+                    )
+
+            if err_msg:
+                logging.warning(err_msg)
+
+        self.set_adapter(adapter_name)
+
+    def set_adapter(self, adapter_name: Union[list[str], str]) -> None:
+        if not self._hf_peft_config_loaded:
+            raise ValueError("No adapter loaded. Please load an adapter first.")
+        elif isinstance(adapter_name, list):
+            missing = set(adapter_name) - set(self.peft_config)
+            if len(missing) > 0:
+                raise ValueError(
+                    "Following adapter(s) could not be found: "
+                    f"{', '.join(missing)}. Make sure you are passing the correct adapter name(s). "
+                    f"Current loaded adapters are: {list(self.peft_config.keys())}"
+                )
+        elif adapter_name not in self.peft_config:
+            raise ValueError(
+                "Adapter with name {adapter_name} not found. Please pass the correct adapter "
+                f"name among {list(self.peft_config.keys())}"
+            )
+
+        from peft.tuners.tuners_utils import BaseTunerLayer
+        from peft.utils import ModulesToSaveWrapper
+
+        _adapters_has_been_set = False
+
+        for _, module in self.dit.named_modules():
+            if isinstance(module, BaseTunerLayer):
+                if hasattr(module, "enable_adapters"):
+                    module.enable_adapters(enabled=True)
+                else:
+                    module.disable_adapters = False
+            if isinstance(module, (BaseTunerLayer, ModulesToSaveWrapper)):
+                if hasattr(module, "set_adapter"):
+                    module.set_adapter(adapter_name)
+                else:
+                    module.active_adapter = adapter_name
+                _adapters_has_been_set = True
+
+        if not _adapters_has_been_set:
+            raise ValueError(
+                "Did not succeed in setting the adapter. Please make sure you are using a model "
+                "that supports adapters."
+            )
+        self.peft_trigger = self.peft_triggers[adapter_name]
+
+    def disable_adapters(self) -> None:
+        if not self._hf_peft_config_loaded:
+            raise ValueError("No adapter loaded. Please load an adapter first.")
+
+        from peft.tuners.tuners_utils import BaseTunerLayer
+        from peft.utils import ModulesToSaveWrapper
+
+        for _, module in self.dit.named_modules():
+            if isinstance(module, (BaseTunerLayer, ModulesToSaveWrapper)):
+                if hasattr(module, "enable_adapters"):
+                    module.enable_adapters(enabled=False)
+                else:
+                    module.disable_adapters = True
+        self.peft_trigger = ""
+
