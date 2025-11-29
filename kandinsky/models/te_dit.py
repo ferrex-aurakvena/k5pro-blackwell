@@ -1,9 +1,10 @@
+# kandinsky/models/te_dit.py
 import warnings
 
 import torch
 from torch import nn
 
-from .nn import (
+from .te_nn import (
     MultiheadSelfAttentionEnc,
     MultiheadSelfAttentionDec,
     MultiheadCrossAttention,
@@ -16,7 +17,8 @@ try:
     from transformer_engine.common.recipe import Format, DelayedScaling
 
     _TE_AVAILABLE = True
-except Exception as e:
+    _TE_IMPORT_ERROR = None
+except Exception as e:  # import failure path
     te = None
     Format = None
     DelayedScaling = None
@@ -24,10 +26,13 @@ except Exception as e:
     _TE_IMPORT_ERROR = e
 
 
-def _convert_linear_to_te(linear: nn.Linear, params_dtype=torch.bfloat16):
+def _convert_linear_to_te(linear: nn.Linear, params_dtype=torch.bfloat16) -> nn.Module:
     """
-    Replace a torch.nn.Linear with a TE Linear, copying weights and bias.
-    If TE is unavailable or this isn't a plain Linear, return the module unchanged.
+    Replace a torch.nn.Linear with a Transformer Engine Linear while
+    copying over weights and bias.
+
+    Only converts plain nn.Linear; already-converted or non-Linear
+    modules are left untouched.
     """
     if not _TE_AVAILABLE:
         return linear
@@ -51,38 +56,79 @@ def _convert_linear_to_te(linear: nn.Linear, params_dtype=torch.bfloat16):
 
 def _patch_dit_for_te(base_dit: nn.Module, params_dtype=torch.bfloat16) -> nn.Module:
     """
-    In-place convert heavy Linear layers in the existing DiT to TE Linear:
-      - Q/K/V/out in all self/cross attentions
+    In-place convert *only* the heavy Linear layers in the existing DiT
+    to Transformer Engine Linears:
+
+      - Q/K/V/out in all encoder/decoder self-attention blocks
+      - Q/K/V/out in all cross-attention blocks
       - FFN in/out projections
+
+    We explicitly do *not* touch TimeEmbeddings, TextEmbeddings,
+    VisualEmbeddings, Modulation, or other small Linear layers, which
+    avoids FP8 shape assertions for 1xD tensors like time embeddings.
     """
     if not _TE_AVAILABLE:
         return base_dit
 
     for module in base_dit.modules():
-        if isinstance(
-            module,
-            (MultiheadSelfAttentionEnc, MultiheadSelfAttentionDec, MultiheadCrossAttention),
-        ):
-            module.to_query = _convert_linear_to_te(module.to_query, params_dtype)
-            module.to_key = _convert_linear_to_te(module.to_key, params_dtype)
-            module.to_value = _convert_linear_to_te(module.to_value, params_dtype)
-            module.out_layer = _convert_linear_to_te(module.out_layer, params_dtype)
+        if isinstance(module, MultiheadSelfAttentionEnc):
+            module.to_query = _convert_linear_to_te(
+                module.to_query, params_dtype=params_dtype
+            )
+            module.to_key = _convert_linear_to_te(
+                module.to_key, params_dtype=params_dtype
+            )
+            module.to_value = _convert_linear_to_te(
+                module.to_value, params_dtype=params_dtype
+            )
+            module.out_layer = _convert_linear_to_te(
+                module.out_layer, params_dtype=params_dtype
+            )
+        elif isinstance(module, MultiheadSelfAttentionDec):
+            module.to_query = _convert_linear_to_te(
+                module.to_query, params_dtype=params_dtype
+            )
+            module.to_key = _convert_linear_to_te(
+                module.to_key, params_dtype=params_dtype
+            )
+            module.to_value = _convert_linear_to_te(
+                module.to_value, params_dtype=params_dtype
+            )
+            module.out_layer = _convert_linear_to_te(
+                module.out_layer, params_dtype=params_dtype
+            )
+        elif isinstance(module, MultiheadCrossAttention):
+            module.to_query = _convert_linear_to_te(
+                module.to_query, params_dtype=params_dtype
+            )
+            module.to_key = _convert_linear_to_te(
+                module.to_key, params_dtype=params_dtype
+            )
+            module.to_value = _convert_linear_to_te(
+                module.to_value, params_dtype=params_dtype
+            )
+            module.out_layer = _convert_linear_to_te(
+                module.out_layer, params_dtype=params_dtype
+            )
         elif isinstance(module, FeedForward):
-            module.in_layer = _convert_linear_to_te(module.in_layer, params_dtype)
-            module.out_layer = _convert_linear_to_te(module.out_layer, params_dtype)
+            module.in_layer = _convert_linear_to_te(
+                module.in_layer, params_dtype=params_dtype
+            )
+            module.out_layer = _convert_linear_to_te(
+                module.out_layer, params_dtype=params_dtype
+            )
 
     return base_dit
 
 
 class DiffusionTransformer3DTEFP8(nn.Module):
     """
-    Thin wrapper around an already-loaded baseline DiffusionTransformer3D that:
+    Thin wrapper around an already-loaded baseline DiffusionTransformer3D:
 
-      - Optionally converts key Linear layers to Transformer Engine Linears
-      - Optionally runs the forward pass under TE FP8 autocast
+      - Optionally converts key Linear layers to TE.Linears
+      - Optionally runs forward under TE FP8 autocast
 
-    We DO NOT re-load weights here: we assume the upstream pipeline has already
-    constructed and loaded the baseline DiT and we just wrap/augment it.
+    We assume the upstream pipeline has already loaded weights.
     """
 
     def __init__(
@@ -95,7 +141,7 @@ class DiffusionTransformer3DTEFP8(nn.Module):
         super().__init__()
 
         if backend not in ("te-fp8", "te_fp8"):
-            raise ValueError(f"Unsupported TE backend: {backend}")
+            raise ValueError(f"Unsupported TE backend: {backend!r}")
 
         self.backend = backend
         self.params_dtype = params_dtype
@@ -104,9 +150,9 @@ class DiffusionTransformer3DTEFP8(nn.Module):
 
         if not _TE_AVAILABLE:
             warnings.warn(
-                "Transformer Engine is not available; "
-                "DiffusionTransformer3DTEFP8 will fall back to baseline DiT "
-                "without TE acceleration.",
+                f"Transformer Engine is not available; DiffusionTransformer3DTEFP8 "
+                f"will fall back to the baseline DiT without TE acceleration. "
+                f"Import error: {_TE_IMPORT_ERROR}",
                 RuntimeWarning,
             )
             self.dit = base_dit
@@ -122,13 +168,12 @@ class DiffusionTransformer3DTEFP8(nn.Module):
         # Convert heavy Linear modules to TE Linear in-place on the baseline DiT
         base_dit = _patch_dit_for_te(base_dit, params_dtype=params_dtype)
 
-        # Optionally build an FP8 recipe (E4M3, same as our TE FP8 sanity check)
+        # Optional FP8 recipe (E4M3)
         self.fp8_recipe = None
         if self.enable_fp8 and DelayedScaling is not None and Format is not None:
             try:
                 self.fp8_recipe = DelayedScaling(fp8_format=Format.E4M3)
             except Exception:
-                # If recipe construction fails, we'll just use default fp8_autocast settings.
                 self.fp8_recipe = None
 
         self.dit = base_dit
@@ -138,6 +183,7 @@ class DiffusionTransformer3DTEFP8(nn.Module):
             ctx_kwargs = {}
             if self.fp8_recipe is not None:
                 ctx_kwargs["fp8_recipe"] = self.fp8_recipe
+            # Only TE Linear modules participate in FP8; plain nn.Linear remains bf16.
             with te.fp8_autocast(enabled=True, **ctx_kwargs):
                 return self.dit(*args, **kwargs)
         else:
@@ -145,11 +191,26 @@ class DiffusionTransformer3DTEFP8(nn.Module):
 
     def __getattr__(self, name: str):
         """
-        Delegate unknown attribute access to the underlying DiT so that
-        code like `model.visual_cond` or `model.instruct_type` still works.
+        Delegate attribute access to the underlying DiT so that
+        code like `model.visual_cond` still works.
+
+        The important part is that we *do not* look in self.__dict__ for
+        `dit`, because PyTorch stores submodules in self._modules.
+        We let nn.Module manage `self.dit` and just forward unknown
+        attributes down to the wrapped DiT.
         """
-        if name in {"backend", "enable_fp8", "params_dtype", "te_available", "dit", "fp8_recipe"}:
+        # Let nn.Module handle our own attributes & the registered submodule.
+        if name in {
+            "backend",
+            "enable_fp8",
+            "params_dtype",
+            "te_available",
+            "dit",
+            "fp8_recipe",
+        }:
             return super().__getattr__(name)
+
+        # For everything else, try the underlying DiT.
         return getattr(self.dit, name)
 
 
@@ -161,10 +222,6 @@ def get_dit(
 ) -> nn.Module:
     """
     Wrap an existing, weight-loaded DiT in a TE/FP8-aware module.
-
-    NOTE: This is intentionally different from the *original* get_dit(conf)
-    in kandinsky/models/dit.py. Here we expect to receive an actual model
-    instance whose weights are already loaded by the upstream pipeline.
     """
     if not _TE_AVAILABLE:
         warnings.warn(

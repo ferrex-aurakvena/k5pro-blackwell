@@ -13,6 +13,7 @@ import torch
 from kandinsky.utils import set_hf_token
 from kandinsky import get_T2V_pipeline
 from kandinsky.models.te_dit import get_dit as get_te_dit
+from kandinsky.te_magcache_utils import enable_magcache_for_dit
 
 
 # -------------------------------
@@ -242,6 +243,46 @@ def parse_args():
 # Pipeline construction
 # -------------------------------
 
+def maybe_enable_magcache(pipe, args):
+    """
+    Optionally enable MagCache on the underlying DiT for both baseline
+    and TE modes.
+
+    We do this here so a TE wrapper (DiffusionTransformer3DTEFP8) can
+    keep using the MagCache-patched DiT inside its fp8 context.
+    """
+    if not args.magcache:
+        return
+
+    conf = getattr(pipe, "conf", None)
+    if conf is None or not hasattr(conf, "magcache") or not hasattr(conf.magcache, "mag_ratios"):
+        print("[te_test] MagCache requested but no `magcache.mag_ratios` found in config; skipping.")
+        return
+
+    # Determine the actual number of diffusion steps for this run.
+    if args.sample_steps is not None:
+        num_steps = args.sample_steps
+    else:
+        num_steps = getattr(pipe, "num_steps", getattr(conf.model, "num_steps", None))
+
+    if num_steps is None:
+        print("[te_test] MagCache requested but could not determine num_steps; skipping.")
+        return
+
+    # Determine the effective guidance weight (CFG on/off).
+    if args.guidance_weight is not None:
+        guidance_weight = args.guidance_weight
+    else:
+        guidance_weight = getattr(pipe, "guidance_weight", getattr(conf.model, "guidance_weight", 1.0))
+
+    enable_magcache_for_dit(
+        pipe.dit,
+        mag_ratios=conf.magcache.mag_ratios,
+        num_steps=num_steps,
+        guidance_weight=guidance_weight,
+    )
+
+
 def build_pipeline(args, device_map):
     # Base T2V pipeline (upstream)
     pipe = get_T2V_pipeline(
@@ -252,6 +293,9 @@ def build_pipeline(args, device_map):
         quantized_qwen=args.qwen_quantization,
         attention_engine=args.attention_engine,
     )
+
+    # Ensure MagCache is wired for this run if requested.
+    maybe_enable_magcache(pipe, args)
 
     if args.no_te:
         print("[te_test] Using baseline bf16 DiT (no TE).")
@@ -301,6 +345,7 @@ def append_jsonl_log(
         "te_backend": None if args.no_te else args.te_backend,
         "fp8_enabled": False if args.no_te else (not args.disable_fp8),
         "expand_prompts": bool(args.expand_prompt),
+        "magcache": bool(args.magcache),
     }
 
     os.makedirs(os.path.dirname(jsonl_path), exist_ok=True)

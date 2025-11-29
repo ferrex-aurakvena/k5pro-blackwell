@@ -11,7 +11,7 @@ from peft import PeftConfig, LoraConfig, inject_adapter_in_model, set_peft_model
 from safetensors.torch import load_file
 from torchvision.transforms import ToPILImage
 
-from .generation_utils import generate_sample
+from .te_generation_utils import generate_sample_te
 
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.verbose = True
@@ -80,6 +80,9 @@ class Kandinsky5T2VPipeline:
         self.peft_trigger = ""
         self.device_mesh = device_mesh
 
+        # Whether MagCache information is present in the config.
+        self._has_magcache = hasattr(conf, "magcache") and hasattr(conf.magcache, "mag_ratios")
+
     def expand_prompt(self, prompt):
         messages = [
             {
@@ -137,6 +140,7 @@ class Kandinsky5T2VPipeline:
         expand_prompts: bool = True,
         save_path: str = None,
         progress: bool = True,
+        use_magcache: bool = False,
     ):
         num_steps = self.num_steps if num_steps is None else num_steps
         guidance_weight = self.guidance_weight if guidance_weight is None else guidance_weight
@@ -184,8 +188,8 @@ class Kandinsky5T2VPipeline:
 
         shape = (1, num_frames, height // 8, width // 8, 16)
 
-        # GENERATION
-        images = generate_sample(
+        # GENERATION (TE-aware + optional MagCache)
+        images, _timings = generate_sample_te(
             shape,
             caption,
             self.dit,
@@ -203,6 +207,7 @@ class Kandinsky5T2VPipeline:
             progress=progress,
             offload=self.offload,
             tp_mesh=self.device_mesh,
+            use_magcache=(use_magcache and self._has_magcache),
         )
         torch.cuda.empty_cache()
 
@@ -380,4 +385,5 @@ class Kandinsky5T2VPipeline:
                 else:
                     module.disable_adapters = True
         self.peft_trigger = ""
+
 
